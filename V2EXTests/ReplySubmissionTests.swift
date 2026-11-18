@@ -153,6 +153,78 @@ final class ReplySubmissionTests: XCTestCase {
         try await send(client)
     }
 
+    func testConfirmsReplyThatAppearsOnSecondRead() async throws {
+        let before = form() + record(10)
+        let client = client([
+            .init(body: before),
+            .init(method: "POST", status: 302, location: "/t/123"),
+            .init(body: before),
+            .init(body: form() + record(11))
+        ])
+        try await send(client)
+        XCTAssertEqual(ReplyRequestProtocol.posts, 1)
+    }
+
+    func testConfirmsReplyThatAppearsOnThirdRead() async throws {
+        let before = form() + record(10)
+        let client = client([
+            .init(body: before),
+            .init(method: "POST", body: before),
+            .init(body: before),
+            .init(body: before),
+            .init(body: form() + record(11))
+        ])
+        try await send(client)
+        XCTAssertEqual(ReplyRequestProtocol.posts, 1)
+    }
+
+    func testTransientConfirmationFailureRetriesOnlyGET() async throws {
+        let client = client([
+            .init(body: form() + record(10)),
+            .init(method: "POST", status: 302, location: "/t/123"),
+            .init(error: .networkConnectionLost),
+            .init(body: form() + record(11))
+        ])
+        try await send(client)
+        XCTAssertEqual(ReplyRequestProtocol.posts, 1)
+    }
+
+    func testTimedOutPOSTCanStillBeConfirmedWithoutResubmission() async throws {
+        let before = form() + record(10)
+        let client = client([
+            .init(body: before),
+            .init(method: "POST", error: .timedOut),
+            .init(body: before),
+            .init(body: form() + record(11))
+        ])
+        try await send(client)
+        XCTAssertEqual(ReplyRequestProtocol.posts, 1)
+    }
+
+    func testConfirmationStopsOnAuthenticationFailure() async {
+        let client = client([
+            .init(body: form()),
+            .init(method: "POST", status: 302, location: "/t/123"),
+            .init(status: 302, location: "/signin")
+        ])
+        do {
+            try await send(client)
+            XCTFail("An expired verification session cannot confirm the reply")
+        } catch V2EXError.replyUnconfirmed {} catch { XCTFail("Unexpected error: \(error)") }
+    }
+
+    func testCancelledConfirmationDoesNotKeepPolling() async {
+        let client = client([
+            .init(body: form()),
+            .init(method: "POST", status: 302, location: "/t/123"),
+            .init(error: .cancelled)
+        ])
+        do {
+            try await send(client)
+            XCTFail("Cancelled verification must preserve an unconfirmed outcome")
+        } catch V2EXError.replyUnconfirmed {} catch { XCTFail("Unexpected error: \(error)") }
+    }
+
     func testPOSTChallengeDoesNotRetry() async {
         let client = client([
             .init(body: form()),
@@ -189,6 +261,8 @@ final class ReplySubmissionTests: XCTestCase {
             .init(body: first),
             .init(path: "/t/123?p=2", body: last),
             .init(method: "POST", body: last, expectedBody: ReplyPage.formBody(content: "测试回复", once: "last"), referer: "/t/123?p=2"),
+            .init(path: "/t/123?p=2", body: last),
+            .init(path: "/t/123?p=2", body: last),
             .init(path: "/t/123?p=2", body: last)
         ])
         do {
@@ -210,6 +284,8 @@ final class ReplySubmissionTests: XCTestCase {
         let client = client([
             .init(body: form()),
             .init(method: "POST", status: 307, location: "/t/123"),
+            .init(body: form()),
+            .init(body: form()),
             .init(body: form())
         ])
         do {
@@ -326,15 +402,21 @@ final class ReplySubmissionTests: XCTestCase {
     }
 
     func testUnknownResponseOnlyChecksWithGET() async {
-        let client = client([.init(body: form()), .init(method: "POST", body: "OK"), .init(body: form())])
+        let client = client([
+            .init(body: form()), .init(method: "POST", body: "OK"),
+            .init(body: form()), .init(body: form()), .init(body: form())
+        ])
         do {
             try await send(client)
             XCTFail("HTTP 200 alone is not confirmation")
         } catch V2EXError.replyUnconfirmed {} catch { XCTFail("Unexpected error: \(error)") }
     }
 
-    func testTimeoutAfterPOSTIsUnconfirmedWithoutRetry() async {
-        let client = client([.init(body: form()), .init(method: "POST", error: .timedOut)])
+    func testTimeoutAfterPOSTIsUnconfirmedWithoutResubmission() async {
+        let client = client([
+            .init(body: form()), .init(method: "POST", error: .timedOut),
+            .init(body: form()), .init(body: form()), .init(body: form())
+        ])
         do {
             try await send(client)
             XCTFail("Timeout must preserve the draft as unconfirmed")
@@ -342,7 +424,10 @@ final class ReplySubmissionTests: XCTestCase {
     }
 
     func testConfirmationReadFailureIsUnconfirmed() async {
-        let client = client([.init(body: form()), .init(method: "POST", status: 302, location: "/t/123"), .init(error: .networkConnectionLost)])
+        let client = client([
+            .init(body: form()), .init(method: "POST", status: 302, location: "/t/123"),
+            .init(error: .networkConnectionLost), .init(error: .timedOut), .init(error: .networkConnectionLost)
+        ])
         do {
             try await send(client)
             XCTFail("A failed GET cannot prove the POST failed")
@@ -421,6 +506,11 @@ private final class ReplyRequestProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "A=reply-test; PB3_SESSION=test-session")
         XCTAssertFalse(request.httpShouldHandleCookies)
         XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
+        if step.method == "GET" {
+            XCTAssertEqual(request.timeoutInterval, Self.posts > 0 ? 5 : 20)
+        }
         XCTAssertTrue(request.value(forHTTPHeaderField: "User-Agent")?.contains("Safari") == true)
         if step.method == "POST" {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), V2EXEndpoint.base)
