@@ -19,6 +19,7 @@ struct TopicDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var replyError: String?
+    @State private var replyIsUnconfirmed = false
     @State private var showReplyError = false
     @State private var isSending = false
     @State private var isSyncingFavorite = false
@@ -878,7 +879,10 @@ struct TopicDetailView: View {
         }
         .padding(.horizontal, Theme.Metric.screenPadding)
         .padding(.bottom, 8)
-        .alert("回复失败", isPresented: $showReplyError) {
+        .alert(replyIsUnconfirmed ? "回复结果待确认" : "回复失败", isPresented: $showReplyError) {
+            Button("到网页查看") {
+                openURL(V2EXEndpoint.url("/t/\(topicID)#reply"))
+            }
             Button("好", role: .cancel) { }
         } message: {
             Text(replyError ?? "")
@@ -892,7 +896,9 @@ struct TopicDetailView: View {
         isSending = true
         defer { isSending = false }
         do {
-            try await V2EXClient.shared.reply(topicID: topicID, content: content, cookie: session.cookie)
+            try await V2EXClient.shared.reply(
+                topicID: topicID, content: content, cookie: session.cookie, username: session.username
+            )
             replyDrafts.clear(topicID: topicID)
             composerFocused = false
             await model.load(
@@ -904,6 +910,11 @@ struct TopicDetailView: View {
             )
         } catch {
             // 回复失败不再清登录状态：一次失败不代表会话失效，由用户决定何时退出。
+            if case V2EXError.replyUnconfirmed = error {
+                replyIsUnconfirmed = true
+            } else {
+                replyIsUnconfirmed = false
+            }
             if case V2EXError.sessionExpired = error {
                 replyError = "网页会话可能已失效，请到设置里重新登录 V2EX。"
             } else {

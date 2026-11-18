@@ -9,6 +9,7 @@ enum V2EXError: LocalizedError {
     case webLogin(String)
     case sessionExpired
     case replyFailed(String)
+    case replyUnconfirmed
     case postFailed(String)
     case blockFailed(String)
     case nodeFollowFailed(String)
@@ -26,6 +27,7 @@ enum V2EXError: LocalizedError {
         case .webLogin(let reason): return "登录失败：\(reason)"
         case .sessionExpired: return "网页会话已过期，请重新登录"
         case .replyFailed(let detail): return "回复失败：\(detail)"
+        case .replyUnconfirmed: return "无法确认回复是否成功，草稿已保留。请先到网页查看，避免重复发送。"
         case .postFailed(let detail): return detail
         case .blockFailed(let detail): return detail
         case .nodeFollowFailed(let detail): return detail
@@ -1035,77 +1037,117 @@ extension V2EXClient {
         return true
     }
 
-    /// POST /t/{id} —— V2EX 网页回复表单的端点（非 /api/topics/...）。
-    /// 成功 = 302 回话题页（URLSession 跟随 → 200 页面含新回复）；
-    /// 失败 = 200 提示页（冷却/风控），必须检查内容再下结论。
-    func reply(topicID: Int, content: String, cookie: String) async throws {
+    /// 每次操作只提交一次；随后仅用 GET 确认新增回复，不能靠草稿回显判断成功。
+    func reply(topicID: Int, content: String, cookie: String, username: String) async throws {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw V2EXError.replyFailed("回复内容不能为空") }
-
-        let once = try await replyOnce(topicID: topicID, cookie: cookie)
-        var components = URLComponents()
-        components.queryItems = [
-            URLQueryItem(name: "content", value: trimmed),
-            URLQueryItem(name: "once", value: once),
-        ]
-        var request = URLRequest(url: V2EXEndpoint.url("/t/\(topicID)"))
+        guard topicID > 0, !trimmed.isEmpty else { throw V2EXError.replyFailed("话题或回复内容无效") }
+        guard !cookie.isEmpty, !username.isEmpty else { throw V2EXError.sessionExpired }
+        let topicURL = V2EXEndpoint.url("/t/\(topicID)")
+        var before = try await replyPage(at: topicURL, topicURL: topicURL, cookie: cookie)
+        if let lastPage = before.page.lastPageURL(topicURL: before.url) {
+            before = try await replyPage(at: lastPage, topicURL: topicURL, cookie: cookie)
+            guard before.page.lastPageURL(topicURL: before.url) == nil else {
+                throw V2EXError.replyFailed("回复列表发生变化，请刷新话题后再发送")
+            }
+        }
+        let form = try before.page.form(topicURL: before.url)
+        var request = Self.replyRequest(url: form.url, cookie: cookie)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.setValue(cookie, forHTTPHeaderField: "Cookie")
-        request.setValue(V2EXEndpoint.base + "/t/\(topicID)", forHTTPHeaderField: "Referer")
-        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+        var origin = URLComponents(url: topicURL, resolvingAgainstBaseURL: false)
+        origin?.path = ""
+        request.setValue(origin?.string, forHTTPHeaderField: "Origin")
+        request.setValue(before.url.absoluteString, forHTTPHeaderField: "Referer")
+        request.httpBody = ReplyPage.formBody(content: trimmed, once: form.once)
+        try Task.checkCancellation()
 
-        let (data, response) = try await webSession.data(for: request)
-        let http = response as? HTTPURLResponse
-        switch http?.statusCode {
-        case 200:
-            let body = String(data: data, encoding: .utf8) ?? ""
-            // V2EX 有回复冷却：间隔太短时返回 200 提示页（不是 problem div）。
-            if body.contains("你上一次回复是在") {
-                Self.log("reply rate limited: topic=\(topicID)")
-                throw V2EXError.replyFailed("回复过于频繁，V2EX 有回复间隔限制，请稍后再试")
-            }
-            if let problem = Self.htmlField(body, pattern: #"<div[^>]*class="problem[^"]*"[^>]*>([\s\S]*?)</div>"#) {
-                Self.log("reply rejected: topic=\(topicID) problem=\(HTMLText.plain(problem))")
-                throw V2EXError.replyFailed(HTMLText.plain(problem))
-            }
-            // 成功 = 跟随 302 后的话题页包含刚发的回复内容。
-            let probe = String(trimmed.prefix(40))
-            if !probe.isEmpty, body.contains(probe) {
-                Self.log("reply succeeded: topic=\(topicID) bytes=\(data.count)")
-                return
-            }
-            let title = Self.htmlField(body, pattern: #"<title>([^<]*)</title>"#) ?? ""
-            Self.log("reply 200 no confirmation: topic=\(topicID) title=\(title) bytes=\(data.count)")
-            throw V2EXError.replyFailed("回复未成功，请稍后重试")
-        case 403:
-            // once 过期 —— 重新取 once 再试一次。
-            Self.log("reply once expired, retrying once: topic=\(topicID)")
-            var retry = request
-            var retryComponents = components
-            retryComponents.queryItems = [
-                URLQueryItem(name: "content", value: trimmed),
-                URLQueryItem(name: "once", value: try await replyOnce(topicID: topicID, cookie: cookie)),
-            ]
-            retry.httpBody = retryComponents.percentEncodedQuery?.data(using: .utf8)
-            let (retryData, retryResponse) = try await webSession.data(for: retry)
-            let retryBody = String(data: retryData, encoding: .utf8) ?? ""
-            if (retryResponse as? HTTPURLResponse)?.statusCode == 200, retryBody.contains(String(trimmed.prefix(40))), !retryBody.contains("你上一次回复是在") {
-                Self.log("reply retry succeeded: topic=\(topicID)")
-                return
-            }
-            // 403 可能是会话失效，也可能只是临时拒绝 —— 验证 cookie 再下结论。
-            let sessionOK = await verifySession(cookie: cookie)
-            Self.log("reply retry failed: HTTP \((retryResponse as? HTTPURLResponse)?.statusCode ?? -1) sessionOK=\(sessionOK) body=\(retryBody.prefix(300))")
-            if sessionOK {
-                throw V2EXError.replyFailed("回复被服务器拒绝，请稍后重试")
-            }
-            throw V2EXError.sessionExpired
-        default:
-            let message = String(data: data, encoding: .utf8) ?? ""
-            Self.log("reply failed: topic=\(topicID) HTTP \(http?.statusCode ?? -1) body=\(message.prefix(200))")
-            throw V2EXError.replyFailed(message.isEmpty ? "HTTP \(http?.statusCode ?? -1)" : HTMLText.plain(message))
+        let data: Data
+        let response: URLResponse
+        do {
+            // 禁止自动 307/308 重放 POST，也不把 Cookie 带到未校验的跳转目标。
+            (data, response) = try await webSession.data(for: request, delegate: RedirectBlocker())
+        } catch {
+            Self.log("reply transport unconfirmed: topic=\(topicID)")
+            throw V2EXError.replyUnconfirmed
         }
+        guard let http = response as? HTTPURLResponse else { throw V2EXError.replyUnconfirmed }
+        Self.log("reply response: topic=\(topicID) status=\(http.statusCode) bytes=\(data.count)")
+        let page = ReplyPage(html: String(data: data, encoding: .utf8) ?? "")
+        try Self.checkReplyResponse(http, page: page, topicURL: topicURL)
+        if http.statusCode == 200, page.confirms(content: trimmed, username: username, after: before.page) {
+            return
+        }
+
+        let destination = try Self.replyRedirect(http, topicURL: topicURL)
+            ?? page.lastPageURL(topicURL: topicURL) ?? before.url
+        do {
+            var after = try await replyPage(at: destination, topicURL: topicURL, cookie: cookie)
+            if !after.page.confirms(content: trimmed, username: username, after: before.page),
+               let lastPage = after.page.lastPageURL(topicURL: after.url) {
+                after = try await replyPage(at: lastPage, topicURL: topicURL, cookie: cookie)
+            }
+            if after.page.confirms(content: trimmed, username: username, after: before.page) { return }
+        } catch {
+            // POST 之后的读取失败不能证明提交失败，重发会造成重复回复。
+            Self.log("reply confirmation unavailable: topic=\(topicID)")
+        }
+        Self.log("reply unconfirmed: topic=\(topicID)")
+        throw V2EXError.replyUnconfirmed
+    }
+
+    private static func replyRequest(url: URL, cookie: String) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.httpShouldHandleCookies = false
+        request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        request.setValue(mobileUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private func replyPage(at url: URL, topicURL: URL, cookie: String) async throws -> (page: ReplyPage, url: URL) {
+        var destination = url
+        for _ in 0..<3 {
+            guard ReplyPage.isTopicURL(destination, relativeTo: topicURL) else { throw V2EXError.replyUnconfirmed }
+            let (data, response) = try await webSession.data(
+                for: Self.replyRequest(url: destination, cookie: cookie), delegate: RedirectBlocker()
+            )
+            guard let http = response as? HTTPURLResponse else { throw V2EXError.replyFailed("无法读取话题网页") }
+            let page = ReplyPage(html: String(data: data, encoding: .utf8) ?? "")
+            try Self.checkReplyResponse(http, page: page, topicURL: topicURL)
+            if let redirect = try Self.replyRedirect(http, topicURL: topicURL) {
+                destination = redirect
+            } else if http.statusCode == 200 {
+                return (page, http.url ?? destination)
+            } else {
+                throw V2EXError.replyFailed("无法读取话题网页（HTTP \(http.statusCode)）")
+            }
+        }
+        throw V2EXError.replyFailed("话题网页重定向次数过多，请到网页查看")
+    }
+
+    private static func checkReplyResponse(_ http: HTTPURLResponse, page: ReplyPage, topicURL: URL) throws {
+        guard let url = http.url, ReplyPage.sameOrigin(url, topicURL) else { throw V2EXError.replyUnconfirmed }
+        if ["/signin", "/2fa"].contains(url.path) || http.statusCode == 401 { throw V2EXError.sessionExpired }
+        guard ReplyPage.isTopicURL(url, relativeTo: topicURL) else { throw V2EXError.replyUnconfirmed }
+        if let rejection = page.rejection { throw rejection }
+        _ = try replyRedirect(http, topicURL: topicURL)
+        if http.statusCode == 403 {
+            throw V2EXError.replyFailed("服务器拒绝了回复请求（HTTP 403），请到网页检查登录或验证状态")
+        }
+        if http.statusCode == 429 { throw V2EXError.replyFailed("回复过于频繁，请稍后再试") }
+        guard http.statusCode == 200 || (300..<400).contains(http.statusCode) else {
+            throw V2EXError.replyUnconfirmed
+        }
+    }
+
+    private static func replyRedirect(_ http: HTTPURLResponse, topicURL: URL) throws -> URL? {
+        guard (300..<400).contains(http.statusCode) else { return nil }
+        guard let location = http.value(forHTTPHeaderField: "Location"),
+              let url = URL(string: location, relativeTo: http.url ?? topicURL)?.absoluteURL,
+              ReplyPage.sameOrigin(url, topicURL) else { throw V2EXError.replyUnconfirmed }
+        if ["/signin", "/2fa"].contains(url.path) { throw V2EXError.sessionExpired }
+        guard ReplyPage.isTopicURL(url, relativeTo: topicURL) else { throw V2EXError.replyUnconfirmed }
+        return url
     }
 
     /// 一次抓取话题页，同时解析浏览数与附言 —— 两者都来自同一个页面，
@@ -1482,7 +1524,7 @@ extension V2EXClient {
     /// POST it back with the session cookie — exactly how `reply` works.
     ///
     /// Success is confirmed only by landing on a real `/t/<id>` URL. Sniffing
-    /// the response body for the text we just sent (as `reply` does) is too
+    /// the response body for the text we just sent is too
     /// loose here: a rejection page echoes the draft back into the form, which
     /// would read as success and lose the user's post.
     func createTopic(
@@ -1593,15 +1635,6 @@ extension V2EXClient {
 
     private static func mentionsCaptcha(_ html: String) -> Bool {
         html.contains("captcha") || html.contains("验证码")
-    }
-
-    private func replyOnce(topicID: Int, cookie: String) async throws -> String {
-        let html = try await webHTML(path: "/t/\(topicID)", cookie: cookie)
-        guard let once = Self.extractOnce(from: html) else {
-            Self.log("replyOnce: no once in /t/\(topicID), len=\(html.count) prefix=\(String(html.prefix(300)))")
-            throw V2EXError.sessionExpired
-        }
-        return once
     }
 
     private func extractCookies() throws -> String {
