@@ -4,10 +4,13 @@
 
 面向个人使用的 V2EX iOS 客户端，支持 **iPhone 与 iPad**，最低 iOS 18。使用 SwiftUI 构建，在 iOS 26 上启用原生 Liquid Glass 组件（低版本自动降级为磨砂材质），数据来自 V2EX API、网页会话和 sov2ex 搜索。iPad 上列表与正文收窄为居中的可读栏宽，横竖屏均可使用。
 
+本仓库也包含 **Android 8.0+** 客户端，源码位于 [`android/`](android/)，来自 [xinghelee/v2ex-android](https://github.com/xinghelee/v2ex-android)。Android 功能说明见[独立 README](android/README.md)，来源、固定版本及许可状态见 [`android/UPSTREAM.md`](android/UPSTREAM.md)。下方功能介绍以 iOS 版为主，两端不是共享业务代码的同一个应用工程。
+
 ## 下载
 
-- **TestFlight 公测**：[testflight.apple.com/join/jUBsFk9u](https://testflight.apple.com/join/jUBsFk9u)
-- **Android 版**：[xinghelee/v2ex-android](https://github.com/xinghelee/v2ex-android)，APK 见其 [Releases](https://github.com/xinghelee/v2ex-android/releases/latest)（Android 8.0+）
+- **本仓 IPA / APK**：通过 [GitHub Actions](https://github.com/goxofy/v2ex/actions/workflows/ios-build.yml) 手动构建，步骤和签名限制见[构建说明](#通过-github-actions-构建-ipa-和-apk)。
+- **上游 iOS TestFlight 公测**：[testflight.apple.com/join/jUBsFk9u](https://testflight.apple.com/join/jUBsFk9u)，不是本仓 Actions 的产物。
+- **上游 Android 发行版**：[xinghelee/v2ex-android Releases](https://github.com/xinghelee/v2ex-android/releases/latest)（Android 8.0+），与本仓 Debug APK 的签名和包名不同。
 
 ## 截图
 
@@ -67,22 +70,70 @@
 
 ## 构建
 
+### 通过 GitHub Actions 构建 IPA 和 APK
+
+1. 打开 **Actions → Build Mobile Apps → Run workflow**（工作流文件仍是 `ios-build.yml`）。
+2. 选择需要构建的分支，`Platforms to build` 默认 `both`，也可选择 `ios` 或 `android`。
+3. 等待对应 job 成功，在该次运行页面底部的 **Artifacts** 下载：
+   - `V2EX-unsigned-ipa-<提交 SHA>`：解压得到 `V2EX-unsigned.ipa`。
+   - `V2EX-debug-apk-<提交 SHA>`：解压得到 `app-debug.apk`。
+   - `V2EX-android-reports-<提交 SHA>`：Android 单元测试和 Lint 报告。
+
+两个平台独立构建，一个失败不会取消另一个。产物保留 **7 天**；构建入口仅手动触发，不在每次 push 时消耗 macOS runner，也不会自动发布 TestFlight 或 GitHub Release。
+
+> **签名限制：** IPA 未签名，需要自行签名侧载，不能直接安装普通 iPhone。APK 已用 Debug 密钥签名，可安装到 Android 8.0+，包名为 `com.vibe.v2ex.debug`，不是正式发行版。不同 Actions 运行的临时 Debug 密钥可能不同，覆盖升级可能失败；卸载后重装会清除该应用数据，请先备份。它不能替代原作者签名的正式版本。正式分发或稳定覆盖升级需要另行配置并保存自己的签名密钥；不要将密钥或密码提交到仓库。
+
+新工作流名称和参数需进入默认分支后才能完整显示在 Actions 页面。在整合分支尚未合入默认分支时，可使用已登记的同名工作流文件从命令行触发：
+
 ```bash
-# 修改 project.yml 后重新生成工程（需要 XcodeGen）
-xcodegen generate
+gh workflow run ios-build.yml --repo goxofy/v2ex \
+  --ref worktree-integrate-android -f platform=both
+```
 
-# 1.2.0 的 iOS 27 能力需要 Xcode 27；部署目标仍为 iOS 26
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+### 本地 iOS 构建
 
+部署目标为 **iOS 18.0**；当前工程此前已在 Actions 的 **Xcode 26.6** 上通过 Release 真机构建。本机工具链需要包含工程使用的 SwiftUI / FoundationModels SDK；旧 Xcode 16.2 无法完整构建。运行时的 `#available` 判断不能保护编译 SDK 中不存在的符号。
+
+直接使用已提交的 `V2EX.xcodeproj`，无需先运行 XcodeGen。只有修改 `project.yml` 并同步工程设置时才重新生成，注意保留实际版本号、构建号和源码引用。
+
+```bash
 # 模拟器
 xcodebuild -project V2EX.xcodeproj -scheme V2EX \
   -destination 'generic/platform=iOS Simulator' build
 
 # 真机（需签名配置）
 open V2EX.xcodeproj   # Signing & Capabilities 里选 Team 后 Cmd+R
+
+# 独立网络回归测试，不需要完整 iOS SDK
+python3 tests/check-reply-submission.py
 ```
 
+### 本地 Android 构建
+
+使用 JDK 21（Java 源码目标 17），配置 `JAVA_HOME`、`ANDROID_HOME`；安装 Android SDK Command-line Tools 23.0、`platforms;android-37.0` 和 `build-tools;37.0.0`。Gradle 9.7.1 / AGP 9.3.2 由工程固定，无需全局安装 Gradle。
+
+在仓库根目录执行：
+
+```bash
+./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:assembleDebug
+./android/gradlew -p android --no-daemon :app:lintDebug
+```
+
+APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。也可用 Android Studio 直接打开 `android/`。Android 的源码来源和签名细节见 [`android/UPSTREAM.md`](android/UPSTREAM.md)。
+
 ## 项目结构
+
+```text
+V2EX.xcodeproj         # iOS 工程，保留原路径
+V2EX/                  # iOS 源码
+V2EXTests/             # iOS 单元测试
+tests/                 # 独立回归检查
+android/               # Android 工程、Gradle Wrapper、app 和测试
+docs/                  # 原 iOS 文档与 Pages 内容
+.github/workflows/     # 双平台手动构建及原有发布流程
+```
+
+### iOS 源码
 
 ```
 V2EX/

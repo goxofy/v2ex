@@ -1,0 +1,48 @@
+package com.vibe.v2ex.data.repository
+
+import com.vibe.v2ex.data.model.Topic
+import com.vibe.v2ex.data.remote.PublicTopicPage
+import com.vibe.v2ex.data.remote.V2exApiV1
+import com.vibe.v2ex.data.remote.WebSessionService
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class HomeRepository @Inject constructor(
+    private val apiV1: V2exApiV1,
+    private val webSessionService: WebSessionService,
+) {
+    /** Public website feed used by recent, node, and followed-node pagination. */
+    suspend fun publicTopicPage(nodeName: String?, page: Int): Result<PublicTopicPage> =
+        webSessionService.publicTopicPage(nodeName = nodeName, page = page)
+
+    /** Kept for the bounded background offline-sync job; interactive feeds use [publicTopicPage]. */
+    suspend fun latestTopics(): Result<List<Topic>> = runCatching { apiV1.latestTopics() }
+
+    /**
+     * 「最热」。`/api/topics/hot.json` 服务端硬性只返回 10 条且没有分页参数，网页版
+     * `?tab=hot` 同一时刻有 30+ 条。所以优先抓网页，解析结果确实比 API 上限多才采用；
+     * 网页改版把解析打残时静默退回 API —— 最热永远不会是空的。
+     */
+    suspend fun hotTopics(): Result<List<Topic>> = runCatching {
+        val scraped = runCatching { webSessionService.hotTopics() }.getOrDefault(emptyList())
+        if (scraped.size > HOT_API_LIMIT) scraped else apiV1.hotTopics()
+    }
+
+    /**
+     * 「R2」。网页端按投票算出来的排序，两版 API 都没有对应接口，只能读网页。
+     * 抓不到就当失败 —— 这一栏没有可退的接口，空列表比一份错的排序诚实。
+     */
+    suspend fun r2Topics(): Result<List<Topic>> = runCatching {
+        webSessionService.r2Topics().ifEmpty { error("R2 页面没有返回话题") }
+    }
+
+    /** Kept for the bounded background offline-sync job; interactive feeds use [publicTopicPage]. */
+    suspend fun topicsInNode(nodeName: String): Result<List<Topic>> =
+        runCatching { apiV1.topicsInNode(nodeName) }
+
+    private companion object {
+        /** `/api/topics/hot.json` 的服务端返回上限。 */
+        const val HOT_API_LIMIT = 10
+    }
+}

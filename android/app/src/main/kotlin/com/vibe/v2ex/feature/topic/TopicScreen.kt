@@ -1,0 +1,1634 @@
+package com.vibe.v2ex.feature.topic
+
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.RemoveRedEye
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarOutline
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.vibe.v2ex.data.model.Topic
+import com.vibe.v2ex.data.moderation.ReportTargetType
+import com.vibe.v2ex.designsystem.Avatar
+import com.vibe.v2ex.designsystem.CardGroupItem
+import com.vibe.v2ex.designsystem.ContentBlock
+import com.vibe.v2ex.designsystem.ContentBlocksView
+import com.vibe.v2ex.designsystem.LocalMemberTags
+import com.vibe.v2ex.designsystem.LocalV2Dark
+import com.vibe.v2ex.designsystem.MemberTagChips
+import com.vibe.v2ex.designsystem.OfflineBadge
+import com.vibe.v2ex.designsystem.OfflineNoticeBar
+import com.vibe.v2ex.designsystem.V2Card
+import com.vibe.v2ex.designsystem.V2Colors
+import com.vibe.v2ex.designsystem.cardGroupPosition
+import com.vibe.v2ex.designsystem.memberTagsFor
+import com.vibe.v2ex.designsystem.relativeTimeText
+import com.vibe.v2ex.feature.tags.MemberTagEditorDialog
+import com.vibe.v2ex.navigation.openInBrowser
+import java.util.Locale
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** 未选中 mini pill 的底色 rgba(118,118,128,0.1)（设计稿 04）。 */
+private val PillNeutralBg = Color(0x1A767680)
+
+@Composable
+fun TopicScreen(
+    topicId: Long,
+    onBack: () -> Unit,
+    onNodeClick: (String) -> Unit = {},
+    onMemberClick: (String) -> Unit = {},
+    onSettingsClick: () -> Unit = {},
+    viewModel: TopicViewModel = hiltViewModel(),
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val listState = rememberLazyListState()
+    val composerFocus = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    var showShareCard by remember { mutableStateOf(false) }
+    var showShareText by remember { mutableStateOf(false) }
+    var highlightedReplyId by remember { mutableStateOf<Long?>(null) }
+    var reportTarget by remember { mutableStateOf<TopicModerationTarget?>(null) }
+    val memberTagsEnabled = LocalMemberTags.current.enabled
+    // 正在打标记的用户：用户名 + 头像（头像可空，只是顺手存给插件那边显示）。
+    var tagEditorTarget by remember { mutableStateOf<Pair<String, String?>?>(null) }
+
+    tagEditorTarget?.let { (username, avatarUrl) ->
+        MemberTagEditorDialog(
+            username = username,
+            avatarUrl = avatarUrl,
+            onDismiss = { tagEditorTarget = null },
+        )
+    }
+
+    val jumpToFloor: (Int) -> Unit = { floor ->
+        val target = uiState.replies.firstOrNull { it.floor == floor }
+        if (target != null) {
+            val targetReplies = if (uiState.onlyPoster && !target.isAuthor) {
+                viewModel.toggleOnlyPoster()
+                uiState.replies
+            } else {
+                uiState.visibleReplies
+            }
+            val targetIndex = targetReplies.indexOfFirst { it.reply.id == target.reply.id }
+            highlightedReplyId = target.reply.id
+            scope.launch {
+                // A filter change materializes the hidden rows on the next composition.
+                delay(40)
+                if (targetIndex >= 0) {
+                    listState.animateScrollToItem(
+                        index = targetIndex + replyListOffset(targetReplies.size),
+                        scrollOffset = -120,
+                    )
+                }
+                delay(2_500)
+                if (highlightedReplyId == target.reply.id) highlightedReplyId = null
+            }
+        }
+    }
+
+    if (showShareCard && !uiState.isTopicHidden) {
+        uiState.topic?.let { topic ->
+            TopicShareCardSheet(
+                topic = topic,
+                summary = uiState.summary,
+                onDismiss = { showShareCard = false },
+            )
+        }
+    }
+    if (showShareText && !uiState.isTopicHidden) {
+        uiState.topic?.let { topic ->
+            TopicShareTextSheet(
+                topic = topic,
+                summary = uiState.summary,
+                replies = uiState.replies,
+                onDismiss = { showShareText = false },
+            )
+        }
+    }
+
+    reportTarget?.let { target ->
+        val currentUsername = uiState.currentUsername
+        val isSelf = !currentUsername.isNullOrBlank() &&
+            target.author.equals(currentUsername, ignoreCase = true)
+        val alreadyBlocked = target.author.lowercase(Locale.ROOT) in uiState.blockedUsernames
+        val canBlock = uiState.isWebSessionActive &&
+            !currentUsername.isNullOrBlank() &&
+            target.author.isNotBlank() &&
+            !isSelf &&
+            !alreadyBlocked
+        val blockHint = when {
+            isSelf -> "不能屏蔽自己"
+            alreadyBlocked -> "已在官网屏蔽名单中"
+            !uiState.isWebSessionActive || currentUsername.isNullOrBlank() -> "需要先登录 V2EX 网页账号"
+            else -> "官网确认后，屏蔽此人的话题和回复"
+        }
+        TopicReportSheet(
+            target = target,
+            isSubmitting = uiState.moderationActionKey != null,
+            canBlockAuthor = canBlock,
+            blockHint = blockHint,
+            onDismiss = { reportTarget = null },
+            onSubmit = { reason, note, alsoBlock ->
+                viewModel.report(target, reason, note, alsoBlock)
+            },
+        )
+    }
+
+    LaunchedEffect(uiState.message) {
+        uiState.message?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            viewModel.consumeMessage()
+        }
+    }
+
+    LaunchedEffect(uiState.moderationCompletion) {
+        val completion = uiState.moderationCompletion ?: return@LaunchedEffect
+        reportTarget = null
+        viewModel.consumeModerationCompletion()
+        if (completion.closeTopic) onBack()
+    }
+
+    LaunchedEffect(uiState.isTopicHidden) {
+        if (uiState.isTopicHidden) {
+            showShareCard = false
+            showShareText = false
+        }
+    }
+
+    // 记住阅读进度：回复就绪后恢复上次读到的楼层（header 占 2 个 item）。
+    LaunchedEffect(uiState.pendingRestoreFloor, uiState.replies.size) {
+        val floor = uiState.pendingRestoreFloor ?: return@LaunchedEffect
+        val index = uiState.visibleReplies.indexOfFirst { it.floor == floor }
+        if (index >= 0) {
+            listState.scrollToItem(index + replyListOffset(uiState.visibleReplies.size))
+            viewModel.consumeRestoreFloor()
+        }
+    }
+
+    // 滚动时上报当前可见楼层（防抖写盘在 VM 内做）。
+    LaunchedEffect(listState, uiState.onlyPoster, uiState.onlyMine, uiState.replies.size) {
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collect { firstIndex ->
+                val replyIndex = firstIndex - replyListOffset(uiState.visibleReplies.size)
+                uiState.visibleReplies.getOrNull(replyIndex)?.let { viewModel.onFloorVisible(it.floor) }
+            }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+            TopicTopBar(
+                nodeTitle = (uiState.topic ?: uiState.preview)?.nodeTitle?.ifBlank { null } ?: "话题",
+                favorited = uiState.favorited,
+                favoriteSyncing = uiState.favoriteSyncing,
+                isOfflineSaved = uiState.isOfflineSaved,
+                onBack = onBack,
+                onNodeClick = { uiState.topic?.node?.name?.let(onNodeClick) },
+                onToggleFavorite = viewModel::toggleFavorite,
+                onToggleOffline = viewModel::toggleOffline,
+                onShareLink = {
+                    if (uiState.topic != null) showShareText = true
+                },
+                onShareCard = { showShareCard = true },
+                onOpenInBrowser = {
+                    val topic = uiState.topic ?: return@TopicTopBar
+                    context.openInBrowser(topic.webUrl)
+                },
+                topicAuthor = uiState.topic?.authorName.orEmpty(),
+                topicAuthorIsSelf = uiState.topic?.authorName?.equals(
+                    uiState.currentUsername,
+                    ignoreCase = true,
+                ) == true,
+                topicAuthorBlocked = uiState.topic?.authorName
+                    ?.lowercase(Locale.ROOT)
+                    ?.let(uiState.blockedUsernames::contains) == true,
+                contentHidden = !uiState.moderationReady || uiState.isTopicHidden,
+                moderationBusy = uiState.moderationActionKey != null,
+                onReportTopic = {
+                    uiState.topic?.toModerationTarget()?.let { reportTarget = it }
+                },
+                onBlockTopicAuthor = {
+                    uiState.topic?.toModerationTarget()?.let(viewModel::blockAuthor)
+                },
+                onTagTopicAuthor = uiState.topic
+                    ?.takeIf { memberTagsEnabled && it.authorName.isNotBlank() }
+                    ?.let { topic -> { tagEditorTarget = topic.authorName to topic.member?.avatarUrl } },
+            )
+
+            if (uiState.moderationActionKey != null) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+
+            if (
+                uiState.moderationReady &&
+                uiState.loadedFromOffline &&
+                uiState.topic != null &&
+                !uiState.isTopicHidden
+            ) {
+                OfflineNoticeBar(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    hint = "连网后重新进入可更新",
+                )
+            }
+
+            val topic = uiState.topic
+            val error = uiState.error
+            when {
+                !uiState.moderationReady -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+                uiState.isTopicHidden -> HiddenTopicState(
+                    isRestoring = uiState.moderationActionKey != null,
+                    onRestore = viewModel::restoreHiddenTopic,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                topic == null && uiState.isLoading -> {
+                    val preview = uiState.preview
+                    if (preview != null) {
+                        TopicPreviewLoading(preview = preview, onAuthorClick = onMemberClick)
+                    } else {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                }
+                topic == null && error != null -> ErrorState(
+                    message = error,
+                    onRetry = viewModel::refresh,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                else -> {
+                    val navBarInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                    LazyColumn(
+                        state = listState,
+                        // 键盘弹起时列表随之收缩，内容不会被压在键盘后面。
+                        modifier = Modifier.fillMaxSize().imePadding(),
+                        contentPadding = PaddingValues(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = 6.dp,
+                            bottom = 120.dp + navBarInset,
+                        ),
+                    ) {
+                        if (topic != null) {
+                            item(key = "header") {
+                                TopicCard(
+                                    topic = topic,
+                                    blocks = uiState.topicBlocks,
+                                    appends = uiState.appends,
+                                    views = uiState.topicViews,
+                                    isPro = topic.authorName in uiState.proMembers,
+                                    isOfflineSaved = uiState.isOfflineSaved,
+                                    onAuthorClick = onMemberClick,
+                                    // 列表给的头像尺寸和接口不同（_xlarge vs _normal），沿用预览那张，
+                                    // 免得内容到了头像重新加载闪一下。
+                                    avatarUrl = uiState.preview
+                                        ?.takeIf { it.authorName == topic.authorName }
+                                        ?.member?.avatarUrl
+                                        ?: topic.member?.avatarUrl,
+                                )
+                            }
+                            item(key = "reply-header") {
+                                ReplyHeaderRow(
+                                    count = topic.replies,
+                                    warning = uiState.replyWarning,
+                                    onlyPoster = uiState.onlyPoster,
+                                    onlyMine = uiState.onlyMine,
+                                    onToggleOnlyPoster = viewModel::toggleOnlyPoster,
+                                    onToggleOnlyMine = viewModel::toggleOnlyMine,
+                                )
+                            }
+                            item(key = "ai-summary") {
+                                TopicSummaryCard(
+                                    summary = uiState.summary,
+                                    isGenerating = uiState.isGeneratingSummary,
+                                    error = uiState.summaryError,
+                                    configured = uiState.isDeepSeekConfigured,
+                                    onGenerate = viewModel::generateSummary,
+                                    onConfigure = onSettingsClick,
+                                    modifier = Modifier.padding(bottom = 10.dp),
+                                )
+                            }
+                        }
+                        val visible = uiState.visibleReplies
+                        if (visible.size > 1) {
+                            item(key = "discussion-track") {
+                                DiscussionTrack(
+                                    replies = visible,
+                                    onFloorClick = jumpToFloor,
+                                    modifier = Modifier.padding(bottom = 10.dp),
+                                )
+                            }
+                        }
+                        itemsIndexed(visible, key = { _, item -> item.reply.id }) { index, floorReply ->
+                            CardGroupItem(
+                                position = cardGroupPosition(index, visible.lastIndex),
+                                dividerInset = 59.dp,
+                                outlined = true,
+                            ) {
+                                ReplyRow(
+                                    floorReply = floorReply,
+                                    isPro = floorReply.reply.authorName in uiState.proMembers,
+                                    highlighted = highlightedReplyId == floorReply.reply.id,
+                                    onAuthorClick = onMemberClick,
+                                    onReplyClick = {
+                                        viewModel.prefillMention(
+                                            "@${floorReply.reply.authorName} #${floorReply.floor} ",
+                                        )
+                                        composerFocus.requestFocus()
+                                    },
+                                    onQuoteClick = jumpToFloor,
+                                    moderationBusy = uiState.moderationActionKey != null,
+                                    authorIsSelf = floorReply.reply.authorName.equals(
+                                        uiState.currentUsername,
+                                        ignoreCase = true,
+                                    ),
+                                    authorBlocked = floorReply.reply.authorName
+                                        .lowercase(Locale.ROOT) in uiState.blockedUsernames,
+                                    onReport = {
+                                        reportTarget = floorReply.toModerationTarget(topicId)
+                                    },
+                                    onBlockAuthor = {
+                                        viewModel.blockAuthor(floorReply.toModerationTarget(topicId))
+                                    },
+                                    onTagAuthor = floorReply.reply
+                                        .takeIf { memberTagsEnabled && it.authorName.isNotBlank() }
+                                        ?.let { reply ->
+                                            { tagEditorTarget = reply.authorName to reply.member?.avatarUrl }
+                                        },
+                                )
+                            }
+                        }
+                        if (topic != null && visible.isEmpty() && !uiState.isLoading) {
+                            item(key = "empty") {
+                                Text(
+                                    text = when {
+                                        uiState.onlyPoster -> "楼主还没有回复"
+                                        uiState.onlyMine -> "还没有与你有关的回复"
+                                        else -> if (topic.replies > 0) "暂无可显示的回复" else "还没有回复"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (uiState.moderationReady && !uiState.isTopicHidden) {
+            ReplyComposerBar(
+                draft = uiState.replyDraft,
+                isSending = uiState.isSendingReply,
+                isLoggedIn = uiState.isWebSessionActive,
+                mentionCandidates = mentionCandidates(uiState),
+                focusRequester = composerFocus,
+                onDraftChange = viewModel::onReplyDraftChange,
+                onInsertMention = { name ->
+                    val text = uiState.replyDraft
+                    val at = text.lastIndexOf('@')
+                    if (at >= 0) viewModel.onReplyDraftChange(text.take(at) + "@$name ")
+                },
+                onSend = viewModel::sendReply,
+                onOpenWebReply = { context.openInBrowser("https://www.v2ex.com/t/$topicId#reply") },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 76.dp),
+        )
+    }
+}
+
+private fun replyListOffset(visibleReplyCount: Int): Int = 3 + if (visibleReplyCount > 1) 1 else 0
+
+private fun Topic.toModerationTarget(): TopicModerationTarget = TopicModerationTarget(
+    targetType = ReportTargetType.TOPIC,
+    targetId = id,
+    topicId = id,
+    author = authorName,
+    excerpt = "$title\n${content.orEmpty()}".trim().take(500),
+)
+
+private fun FloorReply.toModerationTarget(topicId: Long): TopicModerationTarget = TopicModerationTarget(
+    targetType = ReportTargetType.REPLY,
+    targetId = reply.id,
+    topicId = topicId,
+    author = reply.authorName,
+    excerpt = reply.content.take(500),
+)
+
+/**
+ * 草稿末尾正在输入的 `@name` 片段 → 本帖参与者中前缀匹配的候选（最近发言优先）。
+ * 只看结尾，@ 前必须是空白或行首（否则邮箱地址也会弹列表）。
+ */
+private fun mentionCandidates(uiState: TopicUiState): List<String> {
+    val text = uiState.replyDraft
+    val at = text.lastIndexOf('@')
+    if (at < 0) return emptyList()
+    if (at > 0 && !text[at - 1].isWhitespace()) return emptyList()
+    val fragment = text.substring(at + 1)
+    if (fragment.any(Char::isWhitespace)) return emptyList()
+
+    val ordered = LinkedHashSet<String>()
+    uiState.replies.asReversed().forEach { item ->
+        item.reply.authorName.takeIf(String::isNotBlank)?.let(ordered::add)
+    }
+    uiState.topic?.authorName
+        ?.takeIf { it.isNotBlank() && it.lowercase(Locale.ROOT) !in uiState.blockedUsernames }
+        ?.let(ordered::add)
+    uiState.currentUsername?.let { current ->
+        ordered.removeAll { it.equals(current, ignoreCase = true) }
+    }
+
+    val needle = fragment.lowercase(Locale.ROOT)
+    return ordered
+        .filter { needle.isEmpty() || it.lowercase(Locale.ROOT).startsWith(needle) }
+        .take(8)
+}
+
+/** 顶栏：返回 chevron + 节点名面包屑（accent，可点进节点页），右侧收藏星 + ⋯ 菜单。 */
+@Composable
+private fun TopicTopBar(
+    nodeTitle: String,
+    favorited: Boolean,
+    favoriteSyncing: Boolean,
+    isOfflineSaved: Boolean,
+    onBack: () -> Unit,
+    onNodeClick: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onToggleOffline: () -> Unit,
+    onShareLink: () -> Unit,
+    onShareCard: () -> Unit,
+    onOpenInBrowser: () -> Unit,
+    topicAuthor: String,
+    topicAuthorIsSelf: Boolean,
+    topicAuthorBlocked: Boolean,
+    contentHidden: Boolean,
+    moderationBusy: Boolean,
+    onReportTopic: () -> Unit,
+    onBlockTopicAuthor: () -> Unit,
+    onTagTopicAuthor: (() -> Unit)? = null,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    // 返回键独立在左、节点名居中（iOS principal 位）—— 两个功能拉开距离，避免误点。
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .size(44.dp),
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBackIos,
+                contentDescription = "返回",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Text(
+            text = nodeTitle,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.Center)
+                // 中间标题最多占一半宽度，与左右按钮保持安全距离。
+                .fillMaxWidth(0.5f)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onNodeClick)
+                .padding(horizontal = 4.dp, vertical = 8.dp),
+            textAlign = TextAlign.Center,
+        )
+        Row(
+            modifier = Modifier.align(Alignment.CenterEnd),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+        if (!contentHidden) {
+        if (favoriteSyncing) {
+            Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+        } else {
+            IconButton(onClick = onToggleFavorite, modifier = Modifier.size(44.dp)) {
+                Icon(
+                    imageVector = if (favorited) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                    contentDescription = if (favorited) "取消收藏" else "收藏",
+                    tint = if (favorited) V2Colors.Amber else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+        }
+        Box {
+            IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(44.dp)) {
+                Icon(
+                    Icons.Filled.MoreHoriz,
+                    contentDescription = "更多操作",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(
+                    text = { Text(if (isOfflineSaved) "移除离线内容" else "保存以离线阅读") },
+                    trailingIcon = {
+                        if (isOfflineSaved) {
+                            Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onToggleOffline()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("分享文本模板") },
+                    onClick = {
+                        menuExpanded = false
+                        onShareLink()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("分享为卡片") },
+                    onClick = {
+                        menuExpanded = false
+                        onShareCard()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("在 V2EX 打开") },
+                    onClick = {
+                        menuExpanded = false
+                        onOpenInBrowser()
+                    },
+                )
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("举报这个话题") },
+                    enabled = !moderationBusy,
+                    onClick = {
+                        menuExpanded = false
+                        onReportTopic()
+                    },
+                )
+                if (topicAuthor.isNotBlank() && !topicAuthorBlocked) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(if (topicAuthorIsSelf) "不能屏蔽自己" else "屏蔽 @$topicAuthor")
+                        },
+                        enabled = !moderationBusy && !topicAuthorIsSelf,
+                        onClick = {
+                            menuExpanded = false
+                            onBlockTopicAuthor()
+                        },
+                    )
+                }
+                onTagTopicAuthor?.let { tagAuthor ->
+                    DropdownMenuItem(
+                        text = { Text("标记 @$topicAuthor") },
+                        onClick = {
+                            menuExpanded = false
+                            tagAuthor()
+                        },
+                    )
+                }
+            }
+        }
+        }
+        }
+    }
+}
+
+/** 话题主卡：标题、作者行（可点进用户页 + PRO + 浏览数 + 离线标记）、正文、附言。 */
+/**
+ * 完整内容到之前，用列表带来的摘要先画标题卡，下面转圈。边距和正式列表的 contentPadding 一致，
+ * 内容到了标题卡原地不动。
+ */
+@Composable
+private fun TopicPreviewLoading(preview: Topic, onAuthorClick: (String) -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp, top = 6.dp)) {
+        TopicCard(
+            topic = preview,
+            blocks = emptyList(),
+            appends = emptyList(),
+            views = null,
+            isPro = false,
+            isOfflineSaved = false,
+            onAuthorClick = onAuthorClick,
+            // 列表给的是最后回复时间，和详情接口的时间戳不是一回事，先留空免得加载完跳一下。
+            showActivityTime = false,
+        )
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(top = 32.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator()
+        }
+    }
+}
+
+@Composable
+private fun TopicCard(
+    topic: Topic,
+    blocks: List<ContentBlock>,
+    appends: List<AppendBlock>,
+    views: Int?,
+    isPro: Boolean,
+    isOfflineSaved: Boolean,
+    onAuthorClick: (String) -> Unit,
+    showActivityTime: Boolean = true,
+    avatarUrl: String? = topic.member?.avatarUrl,
+) {
+    V2Card(
+        modifier = Modifier.border(
+            width = 0.5.dp,
+            color = MaterialTheme.colorScheme.outlineVariant,
+            shape = RoundedCornerShape(24.dp),
+        ),
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Text(
+                text = topic.title,
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Row(
+                modifier = Modifier.padding(top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(enabled = topic.authorName.isNotBlank()) { onAuthorClick(topic.authorName) },
+                ) {
+                    Avatar(username = topic.authorName, url = avatarUrl, size = 30.dp)
+                    Column(modifier = Modifier.padding(start = 9.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = topic.authorName.ifBlank { "匿名" },
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 14.sp,
+                                    lineHeight = 18.sp,
+                                    fontWeight = FontWeight.Medium,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            if (isPro) ProBadge()
+                            MemberTagChips(
+                                tags = memberTagsFor(topic.authorName),
+                                modifier = Modifier.padding(start = 5.dp),
+                            )
+                        }
+                        // 不显示时也占住这一行，标题卡高度不变。
+                        Text(
+                            text = if (showActivityTime) relativeTimeText(topic.activityTimestamp) else "",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Normal,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                views?.let { count ->
+                    Icon(
+                        Icons.Filled.RemoveRedEye,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(13.dp),
+                    )
+                    Text(
+                        text = String.format(Locale.US, "%,d", count),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 3.dp),
+                    )
+                }
+                if (isOfflineSaved) {
+                    Spacer(Modifier.width(6.dp))
+                    OfflineBadge()
+                }
+            }
+            HorizontalDivider(
+                modifier = Modifier.padding(top = 12.dp),
+                thickness = 0.5.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+            if (blocks.isNotEmpty()) {
+                ContentBlocksView(
+                    blocks = blocks,
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+            }
+
+            // 楼主附言：左侧 accent 竖线 + 「楼主 … 补充」标头（网页抓取，API 不返回）。
+            appends.forEach { append ->
+                Row(
+                    modifier = Modifier
+                        .padding(top = 14.dp)
+                        .height(IntrinsicSize.Min),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(2.5.dp)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                    )
+                    Column(modifier = Modifier.padding(start = 12.dp)) {
+                        Text(
+                            text = "楼主 ${append.append.timeLabel.ifBlank { "补充" }} 补充",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        if (append.blocks.isNotEmpty()) {
+                            ContentBlocksView(
+                                blocks = append.blocks,
+                                textStyle = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** PRO 会员徽章（网页抓取，仅展示不落盘）。 */
+@Composable
+private fun ProBadge() {
+    Text(
+        text = "PRO",
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, lineHeight = 12.sp),
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .padding(start = 5.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(PillNeutralBg)
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    )
+}
+
+/** DeepSeek is opt-in: content is sent only after an explicit tap and successful results are cached. */
+@Composable
+private fun TopicSummaryCard(
+    summary: String?,
+    isGenerating: Boolean,
+    error: String?,
+    configured: Boolean,
+    onGenerate: () -> Unit,
+    onConfigure: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    V2Card(modifier = modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "✦ 讨论摘要",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "DeepSeek",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+            when {
+                summary != null -> {
+                    Text(
+                        text = summaryMarkdown(summary),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "AI 生成，可能不准确",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.weight(1f),
+                        )
+                        SummaryAction("重新生成", enabled = !isGenerating, onClick = onGenerate)
+                    }
+                }
+                isGenerating -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text(
+                        "正在通过 DeepSeek 阅读这段讨论…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 10.dp),
+                    )
+                }
+                configured -> {
+                    Text(
+                        "生成时会把本帖正文和前 60 条回复发送给 DeepSeek；结果缓存在本机。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SummaryAction("生成摘要", enabled = true, onClick = onGenerate)
+                }
+                else -> {
+                    Text(
+                        "配置 DeepSeek API Key 后，可手动提炼核心内容、主要观点与讨论分歧。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SummaryAction("前往设置", enabled = true, onClick = onConfigure)
+                }
+            }
+            if (!error.isNullOrBlank()) {
+                Text(error, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SummaryAction(text: String, enabled: Boolean, onClick: () -> Unit) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 8.dp),
+    )
+}
+
+/** Small Markdown subset produced by the prompt: headings, bullets and bold spans. */
+internal fun summaryMarkdown(source: String) = buildAnnotatedString {
+    val normalized = source.lineSequence().joinToString("\n") { raw ->
+        val trimmed = raw.trimStart()
+        when {
+            Regex("^#{1,6}\\s+").containsMatchIn(trimmed) ->
+                "**${trimmed.replaceFirst(Regex("^#{1,6}\\s+"), "")}**"
+            trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("+ ") ->
+                "• ${trimmed.drop(2)}"
+            else -> raw
+        }
+    }
+    var index = 0
+    while (index < normalized.length) {
+        val start = normalized.indexOf("**", index)
+        if (start < 0) {
+            append(normalized.substring(index))
+            break
+        }
+        append(normalized.substring(index, start))
+        val end = normalized.indexOf("**", start + 2)
+        if (end < 0) {
+            append(normalized.substring(start))
+            break
+        }
+        pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+        append(normalized.substring(start + 2, end))
+        pop()
+        index = end + 2
+    }
+}
+
+/** 回复区头行：`N 条回复` + 单一分段筛选面，保留 Android 的「与我有关」。 */
+@Composable
+private fun ReplyHeaderRow(
+    count: Int,
+    warning: String?,
+    onlyPoster: Boolean,
+    onlyMine: Boolean,
+    onToggleOnlyPoster: () -> Unit,
+    onToggleOnlyMine: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "$count 条回复",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 6.dp, end = 12.dp),
+            )
+            // 放不下（窄屏、大字号）时筛选可以横向滑动，回复数不被挤掉。
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                ReplyFilterControl(
+                    onlyPoster = onlyPoster,
+                    onlyMine = onlyMine,
+                    onShowAll = {
+                        when {
+                            onlyPoster -> onToggleOnlyPoster()
+                            onlyMine -> onToggleOnlyMine()
+                        }
+                    },
+                    onShowPoster = { if (!onlyPoster) onToggleOnlyPoster() },
+                    onShowMine = { if (!onlyMine) onToggleOnlyMine() },
+                )
+            }
+        }
+        if (!warning.isNullOrBlank()) {
+            Text(
+                text = warning,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+            )
+        }
+    }
+}
+
+/** 分段控件：灰色底槽 + 选中项浮起的滑块。筛选是次要操作，不用品牌色抢列表的注意力。 */
+@Composable
+private fun ReplyFilterControl(
+    onlyPoster: Boolean,
+    onlyMine: Boolean,
+    onShowAll: () -> Unit,
+    onShowPoster: () -> Unit,
+    onShowMine: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val dark = LocalV2Dark.current
+    // 暗色下卡片色和底槽几乎一样，滑块得再亮一档才分得开。
+    val thumbColor = if (dark) Color(0xFF3A3A3C) else MaterialTheme.colorScheme.surface
+    val shape = RoundedCornerShape(50)
+    Row(
+        modifier = modifier
+            .horizontalScroll(rememberScrollState())
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(2.dp),
+    ) {
+        listOf(
+            Triple("按楼层", !onlyPoster && !onlyMine, onShowAll),
+            Triple("只看楼主", onlyPoster, onShowPoster),
+            Triple("与我有关", onlyMine, onShowMine),
+        ).forEach { (label, selected, action) ->
+            val background by animateColorAsState(
+                targetValue = if (selected) thumbColor else Color.Transparent,
+                label = "replyFilterThumb",
+            )
+            val elevation by animateDpAsState(
+                targetValue = if (selected && !dark) 1.dp else 0.dp,
+                label = "replyFilterElevation",
+            )
+            val textColor by animateColorAsState(
+                targetValue = if (selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                label = "replyFilterText",
+            )
+            Box(
+                modifier = Modifier
+                    .shadow(elevation, shape)
+                    .clip(shape)
+                    .background(background)
+                    .clickable(role = Role.Tab, onClick = action)
+                    .semantics {
+                        this.role = Role.Tab
+                        this.selected = selected
+                    }
+                    .heightIn(min = 30.dp)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = textColor,
+                )
+            }
+        }
+    }
+}
+
+/** Compact map of a long discussion. First/last are retained and intermediate floors are sampled evenly. */
+@Composable
+private fun DiscussionTrack(
+    replies: List<FloorReply>,
+    onFloorClick: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val maximum = 8
+    val sampled = if (replies.size <= maximum) {
+        replies
+    } else {
+        (0 until maximum).map { position ->
+            val index = ((position.toDouble() / (maximum - 1)) * (replies.size - 1)).toInt()
+            replies[index]
+        }.distinctBy { it.reply.id }
+    }
+
+    V2Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                width = 0.5.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(18.dp),
+            ),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "讨论轨道",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "${replies.size} 层",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Box(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 5.dp, start = 16.dp, end = 16.dp),
+                )
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    sampled.forEach { item ->
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(7.dp))
+                                .clickable { onFloorClick(item.floor) }
+                                .padding(vertical = 2.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(if (item.isAuthor) 10.dp else 9.dp)
+                                    .clip(if (item.isAuthor) RoundedCornerShape(2.dp) else CircleShape)
+                                    .background(
+                                        if (item.isAuthor) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.surface,
+                                    )
+                                    .let { dot ->
+                                        if (item.isAuthor) dot else dot.border(
+                                            1.dp,
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                                            CircleShape,
+                                        )
+                                    },
+                            )
+                            Text(
+                                item.floor.toString(),
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                color = if (item.isAuthor) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.padding(top = 3.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReplyRow(
+    floorReply: FloorReply,
+    isPro: Boolean,
+    highlighted: Boolean,
+    onAuthorClick: (String) -> Unit,
+    onReplyClick: () -> Unit,
+    onQuoteClick: (Int) -> Unit,
+    moderationBusy: Boolean,
+    authorIsSelf: Boolean,
+    authorBlocked: Boolean,
+    onReport: () -> Unit,
+    onBlockAuthor: () -> Unit,
+    onTagAuthor: (() -> Unit)? = null,
+) {
+    val reply = floorReply.reply
+    var menuExpanded by remember(reply.id) { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                if (highlighted) MaterialTheme.colorScheme.primaryContainer
+                else Color.Transparent,
+            )
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .clickable(enabled = reply.authorName.isNotBlank()) { onAuthorClick(reply.authorName) },
+        ) {
+            Avatar(username = reply.authorName, url = reply.member?.avatarUrl, size = 32.dp)
+        }
+        Column(modifier = Modifier.padding(start = 11.dp).weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 左侧信息打包吃满剩余宽度，让楼层号 + 回复按钮固定钉在右缘对齐。
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = reply.authorName,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontSize = 14.sp,
+                            lineHeight = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .clickable(enabled = reply.authorName.isNotBlank()) {
+                                onAuthorClick(reply.authorName)
+                            },
+                    )
+                    if (floorReply.isAuthor) AuthorBadge()
+                    if (isPro) ProBadge()
+                    MemberTagChips(
+                        tags = memberTagsFor(reply.authorName),
+                        maxVisible = 2,
+                        modifier = Modifier.padding(start = 5.dp),
+                    )
+                    Text(
+                        text = relativeTimeText(reply.created),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Normal,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+                Text(
+                    text = "#${floorReply.floor}",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Normal,
+                    ),
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Reply,
+                    contentDescription = "回复 ${reply.authorName}",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onReplyClick)
+                        .padding(6.dp),
+                )
+                Box {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        enabled = !moderationBusy,
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreHoriz,
+                            contentDescription = "举报或屏蔽 ${reply.authorName} 的这条回复",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("举报这条回复") },
+                            enabled = !moderationBusy,
+                            onClick = {
+                                menuExpanded = false
+                                onReport()
+                            },
+                        )
+                        if (reply.authorName.isNotBlank() && !authorBlocked) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (authorIsSelf) "不能屏蔽自己" else "屏蔽 @${reply.authorName}")
+                                },
+                                enabled = !moderationBusy && !authorIsSelf,
+                                onClick = {
+                                    menuExpanded = false
+                                    onBlockAuthor()
+                                },
+                            )
+                        }
+                        onTagAuthor?.let { tagAuthor ->
+                            DropdownMenuItem(
+                                text = { Text("标记 @${reply.authorName}") },
+                                onClick = {
+                                    menuExpanded = false
+                                    tagAuthor()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            floorReply.quoted?.let { quoted ->
+                QuoteCapsule(quoted = quoted, onClick = quoted.floor?.let { { onQuoteClick(it) } })
+            }
+            ContentBlocksView(
+                blocks = floorReply.blocks,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                fontSizeOffset = -1f,
+                lineSpacingScale = 0.75f,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+/** 楼主徽章：11sp/600 accent 字 accentSoft 底 圆角 5。 */
+@Composable
+private fun AuthorBadge() {
+    Text(
+        text = "楼主",
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 14.sp),
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .padding(start = 6.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .padding(horizontal = 6.dp, vertical = 1.dp),
+    )
+}
+
+/** 引用链胶囊：左竖线 2.5dp accent 35%，`user #N` accent + 一行摘要 muted。 */
+@Composable
+private fun QuoteCapsule(quoted: QuotedReply, onClick: (() -> Unit)?) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .height(IntrinsicSize.Min)
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it },
+    ) {
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        )
+        Column(modifier = Modifier.padding(start = 10.dp, top = 2.dp, bottom = 2.dp).weight(1f)) {
+            Text(
+                text = buildString {
+                    append(quoted.username)
+                    quoted.floor?.let { append(" #").append(it) }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            if (quoted.excerpt.isNotBlank()) {
+                Text(
+                    text = quoted.excerpt,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+        if (onClick != null) {
+            Icon(
+                imageVector = Icons.Filled.ArrowUpward,
+                contentDescription = "跳到被引用的回复",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 8.dp, top = 4.dp).size(14.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 底部回复条 — 安卓常规形态：实心底、顶部 0.5dp 分割线、贴底通栏（不悬浮）。
+ * 登录态是真输入框（草稿自动保存、@ 补全、直接发送）；未登录时点击打开网页版。
+ */
+@Composable
+private fun ReplyComposerBar(
+    draft: String,
+    isSending: Boolean,
+    isLoggedIn: Boolean,
+    mentionCandidates: List<String>,
+    focusRequester: FocusRequester,
+    onDraftChange: (String) -> Unit,
+    onInsertMention: (String) -> Unit,
+    onSend: () -> Unit,
+    onOpenWebReply: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        if (isLoggedIn && mentionCandidates.isNotEmpty()) {
+            val trayShape = RoundedCornerShape(14.dp)
+            Box(
+                modifier = Modifier
+                    .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
+                    .fillMaxWidth()
+                    .clip(trayShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, trayShape),
+            ) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 3.dp),
+                ) {
+                    itemsIndexed(mentionCandidates, key = { _, name -> name }) { _, name ->
+                        Text(
+                            text = name,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { onInsertMention(name) }
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                        )
+                    }
+                }
+            }
+        }
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+        Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    // inset 加在 Surface 内部，白底才能铺满键盘/导航条上方，
+                    // 不会露出后面的列表；union 取两者较大值，避免双重叠加。
+                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                // 输入区：surfaceVariant 圆角底，安卓输入条惯用形态。
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .let { if (!isLoggedIn) it.clickable(onClick = onOpenWebReply) else it }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    if (isLoggedIn) {
+                        BasicTextField(
+                            value = draft,
+                            onValueChange = onDraftChange,
+                            textStyle = TextStyle(
+                                fontSize = 16.sp,
+                                lineHeight = 21.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            maxLines = 6,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester),
+                            decorationBox = { innerTextField ->
+                                Box {
+                                    if (draft.isEmpty()) {
+                                        Text(
+                                            text = "写下你的回复…",
+                                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 21.sp),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                            },
+                        )
+                    } else {
+                        Text(
+                            text = "写下你的回复…（未登录将打开网页版）",
+                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 21.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .padding(start = 8.dp, bottom = 1.dp)
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isLoggedIn && draft.isBlank()) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                        .clickable(enabled = !isSending) {
+                            if (isLoggedIn) onSend() else onOpenWebReply()
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (isSending) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.ArrowUpward,
+                            contentDescription = "发送回复",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HiddenTopicState(
+    isRestoring: Boolean,
+    onRestore: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier.padding(horizontal = 20.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        V2Card {
+            Column(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = "这个话题已被举报并隐藏",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = "本页不再显示正文和回复。恢复后会删除本地举报记录；已发送到服务端的举报无法撤回。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                TextButton(
+                    onClick = onRestore,
+                    enabled = !isRestoring,
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    if (isRestoring) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text(if (isRestoring) "正在恢复…" else "恢复显示")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = onRetry, modifier = Modifier.padding(top = 8.dp)) { Text("重试") }
+    }
+}
