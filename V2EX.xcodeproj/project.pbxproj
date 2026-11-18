@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A203918D4F124BCC87CE1101 /* ReplySubmission.swift in Sources */ = {isa = PBXBuildFile; fileRef = A203918D4F124BCC87CE1102 /* ReplySubmission.swift */; };
+		A203918D4F124BCC87CE1103 /* ReplySubmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A203918D4F124BCC87CE1104 /* ReplySubmissionTests.swift */; };
 		0D8EADE531DACCC9A8FF6E36 /* ModerationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B902B26459E7523CE1BFEC5E /* ModerationSettingsView.swift */; };
 		15B0CF068B12A4E6FA4D407E /* V2EX.icon in Resources */ = {isa = PBXBuildFile; fileRef = 25EE905BC783A14059F53387 /* V2EX.icon */; };
 		1F78C3DC3E570CB4FB4DEB28 /* HTMLContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81F6BD7C210C928142B5902 /* HTMLContent.swift */; };
@@ -77,6 +79,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A203918D4F124BCC87CE1102 /* ReplySubmission.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplySubmission.swift; sourceTree = "<group>"; };
+		A203918D4F124BCC87CE1104 /* ReplySubmissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplySubmissionTests.swift; sourceTree = "<group>"; };
 		013392DC75CD088995B1030B /* SpotlightIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpotlightIndexer.swift; sourceTree = "<group>"; };
 		01504C8158B37F075D03E76E /* AutoOfflineCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoOfflineCoordinator.swift; sourceTree = "<group>"; };
 		051CAF813316DB59268DCFC8 /* ModerationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModerationStore.swift; sourceTree = "<group>"; };
@@ -145,6 +149,7 @@
 			children = (
 				FEB41278F2A7A209EAC2FFBE /* AISummaryClient.swift */,
 				B81F6BD7C210C928142B5902 /* HTMLContent.swift */,
+				A203918D4F124BCC87CE1102 /* ReplySubmission.swift */,
 				1BCBFD2B30842891D7861534 /* V2EXClient.swift */,
 			);
 			path = Networking;
@@ -290,6 +295,7 @@
 				93E4A96B18170241FB29F008 /* ContentLinkRoutingTests.swift */,
 				88A4743BB56BF8215D1A511D /* CustomEndpointTests.swift */,
 				277100A13A4163C35603227F /* NodeFollowingTests.swift */,
+				A203918D4F124BCC87CE1104 /* ReplySubmissionTests.swift */,
 			);
 			path = V2EXTests;
 			sourceTree = "<group>";
@@ -471,6 +477,7 @@
 				5D561C729264DDF1FB17BEB4 /* HNTranslationCache.swift in Sources */,
 				2A769EB31609EB038AEA5869 /* HNTranslator.swift in Sources */,
 				1F78C3DC3E570CB4FB4DEB28 /* HTMLContent.swift in Sources */,
+				A203918D4F124BCC87CE1101 /* ReplySubmission.swift in Sources */,
 				C18EAE8CEFEE38E38CC3B246 /* HackerNewsView.swift in Sources */,
 				AA82A2ABA2280EE18F23C7C9 /* HomeView.swift in Sources */,
 				D57646694597782B32E7FD2A /* LaunchAnimationView.swift in Sources */,
@@ -515,6 +522,7 @@
 				DECB082E7628561152D2DEBD /* ContentLinkRoutingTests.swift in Sources */,
 				AA20419B760ADE73BA40DB20 /* CustomEndpointTests.swift in Sources */,
 				F44719FC901CC893180C53B3 /* NodeFollowingTests.swift in Sources */,
+				A203918D4F124BCC87CE1103 /* ReplySubmissionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
