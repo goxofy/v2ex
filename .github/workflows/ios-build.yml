@@ -1,19 +1,9 @@
-# 手动双平台出包，不改变既有 TestFlight 流程，也不在每次 push 时消耗 macOS runner。
-# IPA 未签名；APK 使用临时 Debug 签名，均不用于正式发行。
-name: Build Mobile Apps
+# 仅手动构建 iOS，不改变既有 TestFlight 流程，也不在每次 push 时消耗 macOS runner。
+# IPA 未签名，需要自行签名后安装；Android 使用独立的 android-build.yml。
+name: Build iOS App
 
 on:
   workflow_dispatch:
-    inputs:
-      platform:
-        description: Platforms to build
-        type: choice
-        required: true
-        default: both
-        options:
-          - both
-          - ios
-          - android
 
 permissions:
   contents: read
@@ -21,7 +11,6 @@ permissions:
 jobs:
   ios:
     name: Build unsigned IPA
-    if: ${{ inputs.platform == 'both' || inputs.platform == 'ios' }}
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -79,66 +68,4 @@ jobs:
           name: V2EX-unsigned-ipa-${{ github.sha }}
           path: ${{ runner.temp }}/V2EX-unsigned.ipa
           if-no-files-found: error
-          retention-days: 7
-
-  android:
-    name: Build debug APK
-    if: ${{ inputs.platform == 'both' || inputs.platform == 'android' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: android
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: '16111833'
-          packages: 'platform-tools platforms;android-37.0 build-tools;37.0.0'
-
-      - name: Set up Gradle and validate wrapper
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Test and build debug APK
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
-
-      - name: Lint debug variant
-        run: ./gradlew --no-daemon :app:lintDebug
-
-      - name: Verify APK signature and metadata
-        run: |
-          set -euo pipefail
-          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK_PATH"
-          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose "$APK_PATH"
-          "$ANDROID_HOME/build-tools/37.0.0/aapt" dump badging "$APK_PATH"
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: V2EX-debug-apk-${{ github.sha }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload Android verification reports
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: V2EX-android-reports-${{ github.sha }}
-          path: |
-            android/app/build/reports/tests/testDebugUnitTest/
-            android/app/build/test-results/testDebugUnitTest/*.xml
-            android/app/build/reports/lint-results-debug.*
-          if-no-files-found: warn
           retention-days: 7

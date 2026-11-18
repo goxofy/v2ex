@@ -22,7 +22,7 @@ Gradle Wrapper 脚本已有的版权/Apache-2.0 声明仍保留；Wrapper 的许
 - `gradle/wrapper/gradle-wrapper.properties` 增加官方 Gradle 9.7.1 分发包 SHA-256 校验；导入时 Wrapper JAR SHA-256 也已与 Gradle 官方发布值核对。
 - README 增加本仓构建说明入口；补充 Wrapper 许可证文本。
 - 根 `.gitignore` 增加 Android 签名密钥保护。
-- 根 `.github/workflows/ios-build.yml` 增加 Android 单元测试、Lint 和 Debug APK 构建，原 iOS 未签名 IPA 流程保留。
+- 根 `.github/workflows/android-build.yml` 独立执行 Android 单元测试、Lint 和 Debug APK 构建；`.github/workflows/ios-build.yml` 仅构建 iOS 未签名 IPA。两个入口都只手动触发，构建 Android 不会启动或等待 macOS runner。
 
 ## 构建产物与签名
 
@@ -30,4 +30,4 @@ Gradle Wrapper 脚本已有的版权/Apache-2.0 声明仍保留；Wrapper 的许
 
 上游 `:app:assembleRelease` 在缺少 `keystore.properties` 时会退回 Debug 签名；**这不是正式发布签名**，本仓 Actions 不调用此变体。正式分发或稳定覆盖升级需要自行配置并妥善保存签名密钥，不得将密钥、密码或 `keystore.properties` 提交到仓库。
 
-双平台 Actions 用法见[根 README](../README.md#通过-github-actions-构建-ipa-和-apk)。
+两个独立 Actions 入口的用法见[根 README](../README.md#通过-github-actions-构建-ipa-和-apk)；新增 Android workflow 合入默认分支后即可从 Actions 手动运行。

@@ -8,7 +8,7 @@
 
 ## 下载
 
-- **本仓 IPA / APK**：通过 [GitHub Actions](https://github.com/goxofy/v2ex/actions/workflows/ios-build.yml) 手动构建，步骤和签名限制见[构建说明](#通过-github-actions-构建-ipa-和-apk)。
+- **本仓 IPA / APK**：分别通过 [Build iOS App](https://github.com/goxofy/v2ex/actions/workflows/ios-build.yml) 和 [Build Android App](https://github.com/goxofy/v2ex/actions/workflows/android-build.yml) 手动构建，步骤和签名限制见[构建说明](#通过-github-actions-构建-ipa-和-apk)。
 - **上游 iOS TestFlight 公测**：[testflight.apple.com/join/jUBsFk9u](https://testflight.apple.com/join/jUBsFk9u)，不是本仓 Actions 的产物。
 - **上游 Android 发行版**：[xinghelee/v2ex-android Releases](https://github.com/xinghelee/v2ex-android/releases/latest)（Android 8.0+），与本仓 Debug APK 的签名和包名不同。
 
@@ -72,22 +72,28 @@
 
 ### 通过 GitHub Actions 构建 IPA 和 APK
 
-1. 打开 **Actions → Build Mobile Apps → Run workflow**（工作流文件仍是 `ios-build.yml`）。
-2. 选择需要构建的分支，`Platforms to build` 默认 `both`，也可选择 `ios` 或 `android`。
-3. 等待对应 job 成功，在该次运行页面底部的 **Artifacts** 下载：
-   - `V2EX-unsigned-ipa-<提交 SHA>`：解压得到 `V2EX-unsigned.ipa`。
-   - `V2EX-debug-apk-<提交 SHA>`：解压得到 `app-debug.apk`。
-   - `V2EX-android-reports-<提交 SHA>`：Android 单元测试和 Lint 报告。
+1. 在 **Actions** 中选择要构建的平台，再点击 **Run workflow**：
+   - **Build iOS App**（`ios-build.yml`）：只构建未签名 IPA，使用 macOS runner。
+   - **Build Android App**（`android-build.yml`）：只构建 Debug APK，使用 Ubuntu runner。
+2. 选择需要构建的分支并运行。需要两端产物时，分别启动两个 workflow；不会默认同时构建。
+3. 等待对应 workflow 成功，在各自运行页面底部的 **Artifacts** 下载：
+   - iOS：`V2EX-unsigned-ipa-<提交 SHA>`，解压得到 `V2EX-unsigned.ipa`。
+   - Android：`V2EX-debug-apk-<提交 SHA>`，解压得到 `app-debug.apk`；`V2EX-android-reports-<提交 SHA>` 为单元测试和 Lint 报告。
 
-两个平台独立构建，一个失败不会取消另一个。产物保留 **7 天**；构建入口仅手动触发，不在每次 push 时消耗 macOS runner，也不会自动发布 TestFlight 或 GitHub Release。
+两个 workflow 独立触发、独立显示结果，互不调用或等待。**构建 Android 不会启动 iOS，也不受 macOS runner 排队失败影响**；单独构建 iOS 时仍可能遇到 GitHub 的 macOS 容量限制，拆分并不会消除这一平台限制。产物保留 **7 天**；构建入口仅手动触发，不在每次 push 时消耗 runner，也不会自动发布 TestFlight 或 GitHub Release。
 
 > **签名限制：** IPA 未签名，需要自行签名侧载，不能直接安装普通 iPhone。APK 已用 Debug 密钥签名，可安装到 Android 8.0+，包名为 `com.vibe.v2ex.debug`，不是正式发行版。不同 Actions 运行的临时 Debug 密钥可能不同，覆盖升级可能失败；卸载后重装会清除该应用数据，请先备份。它不能替代原作者签名的正式版本。正式分发或稳定覆盖升级需要另行配置并保存自己的签名密钥；不要将密钥或密码提交到仓库。
 
-新工作流名称和参数需进入默认分支后才能完整显示在 Actions 页面。在整合分支尚未合入默认分支时，可使用已登记的同名工作流文件从命令行触发：
+**首次启用：** 新增的 `android-build.yml` 需要先合入默认分支 `main`，才会出现在 Actions 的手动运行列表中。若仍在整合分支，先合并对应 PR；不要把“尚未登记工作流”误认为构建失败。
+
+合入默认分支后，也可以分别从命令行触发；`--ref` 可改为包含对应 workflow 的其他分支：
 
 ```bash
-gh workflow run ios-build.yml --repo goxofy/v2ex \
-  --ref worktree-integrate-android -f platform=both
+# 只构建 iOS
+gh workflow run ios-build.yml --repo goxofy/v2ex --ref main
+
+# 只构建 Android
+gh workflow run android-build.yml --repo goxofy/v2ex --ref main
 ```
 
 ### 本地 iOS 构建
@@ -130,7 +136,7 @@ V2EXTests/             # iOS 单元测试
 tests/                 # 独立回归检查
 android/               # Android 工程、Gradle Wrapper、app 和测试
 docs/                  # 原 iOS 文档与 Pages 内容
-.github/workflows/     # 双平台手动构建及原有发布流程
+.github/workflows/     # iOS、Android 各自独立的手动构建及原有发布流程
 ```
 
 ### iOS 源码
