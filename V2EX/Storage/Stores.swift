@@ -550,6 +550,13 @@ final class TopicDetailCacheStore: ObservableObject {
         reloadDiskUsage()
     }
 
+    func updateNode(_ node: MoveNode, topicID: Int) {
+        guard let snapshot = snapshot(for: topicID) else { return }
+        var topic = snapshot.topic
+        topic.node = .stub(name: node.name, title: node.title)
+        save(topic: topic, replies: snapshot.replies, appends: snapshot.appends, topicViews: snapshot.topicViews)
+    }
+
     func clearAll() {
         memory.removeAll()
         memoryOrder.removeAll()

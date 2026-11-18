@@ -272,7 +272,16 @@ final class TopicDetailViewModel: ObservableObject {
         )
     }
 
-    private func setTopic(_ topic: V2Topic) {
+    private var confirmedNode: V2Node?
+
+    func updateMovedNode(_ node: MoveNode?) {
+        confirmedNode = node.map { .stub(name: $0.name, title: $0.title) }
+        if let topic { setTopic(topic) }
+    }
+
+    private func setTopic(_ incoming: V2Topic) {
+        var topic = incoming
+        if let confirmedNode { topic.node = confirmedNode }
         let blocks: [ContentBlock]
         if let rendered = topic.contentRendered, !rendered.isEmpty {
             blocks = HTMLText.blocks(from: rendered)

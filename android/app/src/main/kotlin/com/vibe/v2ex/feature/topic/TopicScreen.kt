@@ -126,7 +126,16 @@ fun TopicScreen(
     onSettingsClick: () -> Unit = {},
     viewModel: TopicViewModel = hiltViewModel(),
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val loadedState by viewModel.uiState.collectAsState()
+    val uiState = loadedState.copy(topic = loadedState.topic?.let { movedTopic(it) }, preview = loadedState.preview?.let { movedTopic(it) })
+    val moves = topicMoves()
+    val moveRevision by moves.revision.collectAsState()
+    val movePermissions by moves.permissions.collectAsState()
+    var showMove by remember(topicId, moveRevision) { mutableStateOf(false) }
+    WatchTopicMovePermission(topicId, moves)
+    if (showMove) uiState.topic?.let { topic ->
+        TopicMoveSheet(topic, moves, moveRevision) { showMove = false }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -275,6 +284,7 @@ fun TopicScreen(
                 favoriteSyncing = uiState.favoriteSyncing,
                 isOfflineSaved = uiState.isOfflineSaved,
                 onBack = onBack,
+                onMove = if (movePermissions.containsKey(topicId) && moves.allowed(topicId)) ({ showMove = true }) else null,
                 onNodeClick = { uiState.topic?.node?.name?.let(onNodeClick) },
                 onToggleFavorite = viewModel::toggleFavorite,
                 onToggleOffline = viewModel::toggleOffline,
@@ -575,6 +585,7 @@ private fun TopicTopBar(
     onReportTopic: () -> Unit,
     onBlockTopicAuthor: () -> Unit,
     onTagTopicAuthor: (() -> Unit)? = null,
+    onMove: (() -> Unit)? = null,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     // 返回键独立在左、节点名居中（iOS principal 位）—— 两个功能拉开距离，避免误点。
@@ -640,6 +651,9 @@ private fun TopicTopBar(
                 )
             }
             DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                onMove?.let { move ->
+                    DropdownMenuItem(text = { Text("移动主题") }, onClick = { menuExpanded = false; move() })
+                }
                 DropdownMenuItem(
                     text = { Text(if (isOfflineSaved) "移除离线内容" else "保存以离线阅读") },
                     trailingIcon = {

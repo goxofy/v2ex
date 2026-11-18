@@ -311,6 +311,7 @@ struct HomeView: View {
                             }
                         }
                         .buttonStyle(.row)
+                        .topicMoveAction(for: featured)
                         // CardSection insets its content by 16 on top of the
                         // screen padding, so the corner sits further in here.
                         .promotionBadge(
@@ -330,6 +331,7 @@ struct HomeView: View {
                             )
                         }
                         .buttonStyle(.row)
+                        .topicMoveAction(for: topic)
                         .promotionBadge(for: topic)
                     }
                 }

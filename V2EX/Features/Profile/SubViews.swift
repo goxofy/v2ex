@@ -160,6 +160,7 @@ struct RadarView: View {
                                 radarTopicRow(topic)
                             }
                             .buttonStyle(.row)
+                            .topicMoveAction(for: topic)
                         }
                     }
                 }
@@ -333,6 +334,7 @@ struct FavoritesView: View {
                                 favoriteTopicRow(topic)
                             }
                             .buttonStyle(.row)
+                            .topicMoveAction(for: topic)
                             .contextMenu {
                                 Button {
                                     organizerTopic = topic
@@ -652,6 +654,7 @@ struct HistoryView: View {
                                     TopicRow(topic: entry.topic, isOffline: offline.isOffline(entry.topic.id))
                                 }
                                 .buttonStyle(.row)
+                                .topicMoveAction(for: entry.topic)
                                 .promotionBadge(for: entry.topic)
                                 .contextMenu {
                                     Button(role: .destructive) {
@@ -759,6 +762,7 @@ struct OfflineListView: View {
                                 TopicRow(topic: saved.topic, isOffline: true)
                             }
                             .buttonStyle(.row)
+                            .topicMoveAction(for: saved.topic)
                             .contextMenu {
                                 Button(role: .destructive) {
                                     offline.remove(id: saved.id)
@@ -855,6 +859,7 @@ struct MyPostsView: View {
                                 TopicRow(topic: topic, isOffline: offline.isOffline(topic.id))
                             }
                             .buttonStyle(.row)
+                            .topicMoveAction(for: topic)
                         }
                     }
                 }
@@ -936,6 +941,7 @@ struct MemberView: View {
                                 TopicRow(topic: topic)
                             }
                             .buttonStyle(.row)
+                            .topicMoveAction(for: topic)
                             .contextMenu {
                                 ModerationMenuItems(
                                     target: .topic(id: topic.id, author: topic.authorName, excerpt: topic.title),

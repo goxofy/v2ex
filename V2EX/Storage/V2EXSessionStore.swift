@@ -11,6 +11,7 @@ import SwiftUI
 final class V2EXSessionStore: ObservableObject {
     @Published private(set) var cookie: String = ""
     @Published private(set) var username: String = ""
+    @Published private(set) var revision: UInt64 = 0
 
     private let cookieService = "com.vibe.v2ex.session"
     private let usernameService = "com.vibe.v2ex.session.username"
@@ -18,7 +19,11 @@ final class V2EXSessionStore: ObservableObject {
 
     var isLoggedIn: Bool { !cookie.isEmpty }
 
-    init() {
+    private let inMemory: Bool
+
+    init(inMemory: Bool = false) {
+        self.inMemory = inMemory
+        if inMemory { return }
         #if DEBUG && targetEnvironment(simulator)
         if let scenario = ModerationReplay.scenario {
             cookie = "moderation-response-replay"
@@ -33,15 +38,21 @@ final class V2EXSessionStore: ObservableObject {
     func save(cookie: String, username: String) {
         self.cookie = cookie
         self.username = username
-        write(cookie, service: cookieService)
-        write(username, service: usernameService)
+        if !inMemory {
+            write(cookie, service: cookieService)
+            write(username, service: usernameService)
+        }
+        revision &+= 1
     }
 
     func clear() {
         cookie = ""
         username = ""
-        delete(service: cookieService)
-        delete(service: usernameService)
+        if !inMemory {
+            delete(service: cookieService)
+            delete(service: usernameService)
+        }
+        revision &+= 1
     }
 
     private func read(service: String) -> String? {
