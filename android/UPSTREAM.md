@@ -17,6 +17,8 @@ Gradle Wrapper 脚本已有的版权/Apache-2.0 声明仍保留；Wrapper 的许
 
 - 整体放入 `android/`，iOS 工程保留根路径；应用包名和版本号不变。
 - `NotificationPushNotifier.kt` 将发送通知的 `runCatching` 改为显式捕获 `SecurityException`，保留权限检查后的撤销兜底，并修复上游 `MissingPermission` Lint 错误；未关闭或忽略该检查。
+- `WebSessionService.postReply` 委派给独立的 `ReplySubmission` / `ReplyPage`：每次操作最多一次 POST，取消 403 自动重发并禁止网络库重放；对页面延迟更新和 POST 传输异常最多进行三轮只读确认。使用会话 Cookie 快照、限定表单与同源话题跳转，按新增回复 ID、作者和完整正文确认，无法确认时保留草稿并提示先到网页查看。协程取消会停止在途请求，不改其他网页操作。
+- 新增基于 MockWebServer 5.5.0 的回帖回归测试，覆盖真实本机 HTTP 请求、延迟/超时确认、重定向、禁止重复 POST、分页、取消和页面误判防护；不使用真实账号发帖。复杂富文本无法可靠匹配时保守返回待确认，不通过删除 Markdown 符号或 URL 子串比较来判定成功。
 - `gradle/wrapper/gradle-wrapper.properties` 增加官方 Gradle 9.7.1 分发包 SHA-256 校验；导入时 Wrapper JAR SHA-256 也已与 Gradle 官方发布值核对。
 - README 增加本仓构建说明入口；补充 Wrapper 许可证文本。
 - 根 `.gitignore` 增加 Android 签名密钥保护。
