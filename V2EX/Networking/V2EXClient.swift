@@ -1068,6 +1068,11 @@ extension V2EXClient {
             (data, response) = try await webSession.data(for: request, delegate: RedirectBlocker())
         } catch {
             Self.log("reply transport unconfirmed: topic=\(topicID)")
+            // 超时可能发生在服务器已经保存回复之后，仍只读取确认，绝不重发 POST。
+            if !error.isCancellation, await confirmReply(
+                at: before.url, topicURL: topicURL, cookie: cookie,
+                content: trimmed, username: username, baseline: before.page
+            ) { return }
             throw V2EXError.replyUnconfirmed
         }
         guard let http = response as? HTTPURLResponse else { throw V2EXError.replyUnconfirmed }
@@ -1080,19 +1085,41 @@ extension V2EXClient {
 
         let destination = try Self.replyRedirect(http, topicURL: topicURL)
             ?? page.lastPageURL(topicURL: topicURL) ?? before.url
-        do {
-            var after = try await replyPage(at: destination, topicURL: topicURL, cookie: cookie)
-            if !after.page.confirms(content: trimmed, username: username, after: before.page),
-               let lastPage = after.page.lastPageURL(topicURL: after.url) {
-                after = try await replyPage(at: lastPage, topicURL: topicURL, cookie: cookie)
-            }
-            if after.page.confirms(content: trimmed, username: username, after: before.page) { return }
-        } catch {
-            // POST 之后的读取失败不能证明提交失败，重发会造成重复回复。
-            Self.log("reply confirmation unavailable: topic=\(topicID)")
-        }
+        if await confirmReply(
+            at: destination, topicURL: topicURL, cookie: cookie,
+            content: trimmed, username: username, baseline: before.page
+        ) { return }
         Self.log("reply unconfirmed: topic=\(topicID)")
         throw V2EXError.replyUnconfirmed
+    }
+
+    /// 页面更新或一次读取可能滞后：最多三轮 GET，失败后分别等待 1、2 秒。
+    private func confirmReply(
+        at url: URL, topicURL: URL, cookie: String,
+        content: String, username: String, baseline: ReplyPage
+    ) async -> Bool {
+        var destination = url
+        for attempt in 0..<3 {
+            do {
+                try Task.checkCancellation()
+                if attempt > 0 { try await Task.sleep(for: .seconds(attempt)) }
+                var after = try await replyPage(at: destination, topicURL: topicURL, cookie: cookie, timeout: 5)
+                if after.page.confirms(content: content, username: username, after: baseline) { return true }
+                destination = after.url
+                if let lastPage = after.page.lastPageURL(topicURL: after.url) {
+                    destination = lastPage
+                    after = try await replyPage(at: lastPage, topicURL: topicURL, cookie: cookie, timeout: 5)
+                    if after.page.confirms(content: content, username: username, after: baseline) { return true }
+                }
+            } catch {
+                if error.isCancellation { return false }
+                // 登录失效、验证或限流不能靠继续读取解决，也不能反推 POST 没有成功。
+                if case V2EXError.sessionExpired = error { return false }
+                if case V2EXError.replyFailed = error { return false }
+                Self.log("reply confirmation read unavailable: attempt=\(attempt + 1)")
+            }
+        }
+        return false
     }
 
     private static func replyRequest(url: URL, cookie: String) -> URLRequest {
@@ -1101,16 +1128,20 @@ extension V2EXClient {
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
         request.setValue(mobileUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
         return request
     }
 
-    private func replyPage(at url: URL, topicURL: URL, cookie: String) async throws -> (page: ReplyPage, url: URL) {
+    private func replyPage(
+        at url: URL, topicURL: URL, cookie: String, timeout: TimeInterval = 20
+    ) async throws -> (page: ReplyPage, url: URL) {
         var destination = url
         for _ in 0..<3 {
             guard ReplyPage.isTopicURL(destination, relativeTo: topicURL) else { throw V2EXError.replyUnconfirmed }
-            let (data, response) = try await webSession.data(
-                for: Self.replyRequest(url: destination, cookie: cookie), delegate: RedirectBlocker()
-            )
+            var request = Self.replyRequest(url: destination, cookie: cookie)
+            request.timeoutInterval = timeout
+            let (data, response) = try await webSession.data(for: request, delegate: RedirectBlocker())
             guard let http = response as? HTTPURLResponse else { throw V2EXError.replyFailed("无法读取话题网页") }
             let page = ReplyPage(html: String(data: data, encoding: .utf8) ?? "")
             try Self.checkReplyResponse(http, page: page, topicURL: topicURL)
