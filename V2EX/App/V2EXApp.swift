@@ -7,6 +7,7 @@ struct V2EXApp: App {
     @StateObject private var settings = AppSettings()
     @StateObject private var token = TokenStore()
     @StateObject private var session = V2EXSessionStore()
+    @StateObject private var topicMoves = TopicMoveStore()
     @StateObject private var aiConfiguration = AIConfigurationStore()
     @StateObject private var followed = FollowedNodesStore()
     @StateObject private var readState = ReadStateStore()
@@ -28,6 +29,11 @@ struct V2EXApp: App {
                 .environmentObject(settings)
                 .environmentObject(token)
                 .environmentObject(session)
+                .environmentObject(topicMoves)
+                .onChange(of: topicMoves.key(session: session)) { _, _ in topicMoves.synchronize(session: session) }
+                .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+                    topicMoves.synchronize(session: session)
+                }
                 .environmentObject(aiConfiguration)
                 .environmentObject(followed)
                 .environmentObject(readState)
