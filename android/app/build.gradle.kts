@@ -126,6 +126,7 @@ dependencies {
     ksp(libs.room.compiler)
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.okhttp.mockwebserver)
 
     implementation(libs.datastore.preferences)
     implementation(libs.security.crypto)
