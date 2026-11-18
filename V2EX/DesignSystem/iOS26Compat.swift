@@ -1,12 +1,9 @@
 import SwiftUI
 
 extension TabRole {
-    /// iOS 27 的 search 不保证独立显示，使用 prominent 固定为右侧独立入口。
+    /// 使用当前构建 SDK 支持的搜索角色；运行时版本判断无法保护 SDK 中不存在的符号。
     static var separateSearch: TabRole {
-        if #available(iOS 27.0, *) {
-            return .prominent
-        }
-        return .search
+        .search
     }
 }
 
