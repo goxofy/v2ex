@@ -31,8 +31,7 @@ internal class TopicMovePage(html: String, private val base: HttpUrl) {
 
     fun topic(topicId: Long): MoveTopic {
         checkPage()
-        if (document.select("#Main").size != 1) throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
-        val headers = document.select("#Main > .box > .header").filter { it.select("h1").size == 1 }
+        val headers = mainBoxes().flatMap { it.children() }.filter { it.hasClass("header") && it.select("h1").size == 1 }
         val header = headers.singleOrNull() ?: throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
         val nodes = header.select("a[href]").mapNotNull { nodeLink(it) }.distinctBy { it.name }
         val node = nodes.singleOrNull() ?: throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
@@ -46,10 +45,9 @@ internal class TopicMovePage(html: String, private val base: HttpUrl) {
 
     fun form(topicId: Long): MoveForm {
         checkPage()
-        if (document.select("#Main").size != 1) throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
-        val forms = document.select("#Main > .box > .inner form").filter {
-            it.select("select[name=destination]").isNotEmpty()
-        }
+        val forms = mainBoxes().flatMap { box ->
+            box.children().filter { it.hasClass("inner") }.flatMap { it.select("form") }
+        }.filter { it.select("select[name=destination]").isNotEmpty() }
         val form = forms.singleOrNull() ?: throw MoveFailure(MoveFailure.Kind.DENIED)
         val action = base.resolve(form.attr("action")) ?: throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
         if (!action.sameOrigin(base) || action.encodedPath != "/move/topic/$topicId" || action.query != null ||
@@ -79,10 +77,26 @@ internal class TopicMovePage(html: String, private val base: HttpUrl) {
         if (document.select("form[action='/signin'],form[action='/2fa'],input[type=password],#Top a[href='/signin']").isNotEmpty()) {
             throw MoveFailure(MoveFailure.Kind.SESSION)
         }
-        if (document.select("#Main .problem,#Main #problem").isNotEmpty()) throw MoveFailure(MoveFailure.Kind.REJECTED)
+        if (document.select("#Main .problem,#Main #problem,#Wrapper > .content .problem,#Wrapper > .content #problem").isNotEmpty()) {
+            throw MoveFailure(MoveFailure.Kind.REJECTED)
+        }
         if (document.title().contains("just a moment", true) || document.title().contains("attention required", true)) {
             throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
         }
+    }
+
+    private fun mainBoxes(): List<Element> {
+        val mains = document.select("#Main")
+        val container = if (mains.isNotEmpty()) {
+            mains.singleOrNull() ?: throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
+        } else {
+            // Mobile pages omit Main; do not broaden this to arbitrary descendant boxes.
+            val wrapper = document.select("#Wrapper").singleOrNull()?.takeIf { it.tagName() == "div" }
+                ?: throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
+            wrapper.children().filter { it.tagName() == "div" && it.hasClass("content") }.singleOrNull()
+                ?: throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
+        }
+        return container.children().filter { it.tagName() == "div" && it.hasClass("box") }
     }
 
     private fun nodeLink(link: Element): MoveNode? {
