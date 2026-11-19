@@ -239,10 +239,7 @@ fun FeaturedTopicCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ): Unit {
-    Column(modifier) {
-        FeaturedTopicCardBody(com.vibe.v2ex.feature.topic.movedTopic(topic), badge, onClick)
-        com.vibe.v2ex.feature.topic.TopicMoveAction(topic)
-    }
+    FeaturedTopicCardBody(com.vibe.v2ex.feature.topic.movedTopic(topic), badge, onClick, modifier)
 }
 
 @Composable
@@ -332,10 +329,7 @@ fun CardTopicRow(
     dimmed: Boolean = false,
     trailingBadge: (@Composable () -> Unit)? = null,
 ): Unit {
-    Column(modifier) {
-        CardTopicRowBody(com.vibe.v2ex.feature.topic.movedTopic(topic), onClick, dimmed = dimmed, trailingBadge = trailingBadge)
-        com.vibe.v2ex.feature.topic.TopicMoveAction(topic)
-    }
+    CardTopicRowBody(com.vibe.v2ex.feature.topic.movedTopic(topic), onClick, modifier, dimmed, trailingBadge)
 }
 
 @Composable

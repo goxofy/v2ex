@@ -82,12 +82,6 @@ fun NodeTopicsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val moves = com.vibe.v2ex.feature.topic.topicMoves()
     val movedNodes by moves.movedNodes.collectAsState()
-    val moveRevision by moves.revision.collectAsState()
-    LaunchedEffect(uiState.raw.map { it.id }, moveRevision) {
-        for (topic in uiState.raw) {
-            if (movedNodes.containsKey(topic.id)) moves.refreshMovedNode(topic.id)
-        }
-    }
     uiState.followError?.let { message ->
         AlertDialog(
             onDismissRequest = viewModel::dismissFollowError,

@@ -3,7 +3,6 @@ package com.vibe.v2ex.data.remote
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -29,15 +28,11 @@ internal data class MovePreparation(val topic: MoveTopic, val form: MoveForm, va
 internal class TopicMoveService(
     client: OkHttpClient,
     private val base: HttpUrl = "https://www.v2ex.com/".toHttpUrl(),
-    private val wait: suspend (Long) -> Unit = { delay(it) },
 ) {
     private val http = client.newBuilder().followRedirects(false).followSslRedirects(false)
         .retryOnConnectionFailure(false).authenticator(Authenticator.NONE).proxyAuthenticator(Authenticator.NONE)
         .cookieJar(CookieJar.NO_COOKIES).cache(null).callTimeout(15, TimeUnit.SECONDS)
         .also { it.interceptors().clear(); it.networkInterceptors().clear() }.build()
-    private val confirmation = http.newBuilder().callTimeout(5, TimeUnit.SECONDS)
-        .connectTimeout(5, TimeUnit.SECONDS).readTimeout(5, TimeUnit.SECONDS).build()
-
     suspend fun permission(id: Long, cookie: String): MoveTopic = safe {
         validate(id, cookie)
         val topic = TopicMovePage(get("/t/$id", cookie).body, base).topic(id)
@@ -72,7 +67,7 @@ internal class TopicMoveService(
     suspend fun move(
         id: Long, cookie: String, expectedNode: String, destination: MoveNode, memo: String,
         sessionCurrent: () -> Boolean,
-    ): MoveNode {
+    ): MoveSubmission {
         var submitted = false
         try {
             validate(id, cookie)
@@ -81,43 +76,42 @@ internal class TopicMoveService(
             val fresh = permission(id, cookie)
             if (!fresh.canMove) throw MoveFailure(MoveFailure.Kind.DENIED)
             if (fresh.node.name != expectedNode) throw MoveFailure(MoveFailure.Kind.CHANGED)
-            if (fresh.node.name == destination.name) return fresh.node
+            if (fresh.node.name == destination.name) return MoveSubmission.Unchanged(fresh.node)
             val form = TopicMovePage(get("/move/topic/$id", cookie).body, base).form(id)
             if (!sessionCurrent()) throw MoveFailure(MoveFailure.Kind.SESSION)
             val body = FormBody.Builder().add("destination", destination.name).add("memo", memo)
                 .apply { form.hidden.forEach { (key, value) -> add(key, value) } }.build()
             submitted = true
-            val response = try {
-                execute(request(base.resolve("/move/topic/$id")!!, cookie)
-                    .post(OneShotBody(body)).build(), http)
-            } catch (error: IOException) { null }
-            if (response != null) {
-                if (response.code in 400..499 && response.code != 408) {
-                    throw MoveFailure(if (response.code in listOf(401, 403)) MoveFailure.Kind.DENIED else MoveFailure.Kind.REJECTED)
+            val response = execute(request(base.resolve("/move/topic/$id")!!, cookie)
+                .post(OneShotBody(body)).build(), http)
+            if (response.code in listOf(401, 403)) throw MoveFailure(MoveFailure.Kind.DENIED)
+            if (response.code == 408 || response.code >= 500) throw MoveFailure(MoveFailure.Kind.SERVER)
+            if (response.code in 300..399) {
+                val target = response.location?.let { base.resolve(it) }
+                if (target != null && target.sameOrigin(base) && target.encodedPath in listOf("/signin", "/2fa")) {
+                    throw MoveFailure(MoveFailure.Kind.SESSION)
                 }
-                if (response.code in 300..399) {
-                    val target = response.location?.let { base.resolve(it) }
-                    if (target == null || !allowed(target, "/t/$id")) throw MoveFailure(MoveFailure.Kind.UNCONFIRMED)
+                if (response.code !in listOf(301, 302, 303, 307, 308) || target == null || !allowed(target, "/t/$id")) {
+                    throw MoveFailure(MoveFailure.Kind.RESPONSE)
                 }
-                if (response.code == 200) TopicMovePage(response.body, base).checkPage()
+            } else {
+                if (response.code !in 200..299) throw MoveFailure(MoveFailure.Kind.REJECTED)
+                val page = TopicMovePage(response.body, base)
+                if (page.requiresVerification()) throw MoveFailure(MoveFailure.Kind.VERIFICATION)
+                page.checkPage()
             }
-            repeat(3) { attempt ->
-                if (attempt > 0) wait(attempt * 1000L)
-                if (!sessionCurrent()) throw MoveFailure(MoveFailure.Kind.UNCONFIRMED)
-                try {
-                    val topic = kotlinx.coroutines.withTimeoutOrNull(5000) {
-                        TopicMovePage(get("/t/$id", cookie, confirmation).body, base).topic(id)
-                    }
-                    if (topic != null && topic.node.name == destination.name && sessionCurrent()) return topic.node
-                } catch (error: CancellationException) { throw error }
-                catch (_: Exception) { /* Only GET confirmation may be retried. */ }
-            }
-            throw MoveFailure(MoveFailure.Kind.UNCONFIRMED)
+            if (!sessionCurrent()) throw MoveFailure(MoveFailure.Kind.SESSION)
+            return MoveSubmission.Submitted(destination)
         } catch (error: CancellationException) { throw error }
         catch (error: MoveFailure) { throw error }
         catch (_: Exception) {
-            throw MoveFailure(if (submitted) MoveFailure.Kind.UNCONFIRMED else MoveFailure.Kind.UNAVAILABLE)
+            throw MoveFailure(if (submitted) MoveFailure.Kind.CONNECTION else MoveFailure.Kind.UNAVAILABLE)
         }
+    }
+
+    suspend fun currentNode(id: Long, cookie: String): MoveNode = safe {
+        validate(id, cookie)
+        TopicMovePage(get("/t/$id", cookie).body, base).topic(id).node
     }
 
     private suspend fun <T> safe(block: suspend () -> T): T = try { block() }

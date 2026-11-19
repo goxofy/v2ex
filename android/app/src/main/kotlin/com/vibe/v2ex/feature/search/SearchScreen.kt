@@ -231,9 +231,6 @@ fun SearchScreen(
                             modifier = Modifier.padding(horizontal = 16.dp),
                         ) {
                             SearchResultRow(hit = hit, onClick = { onTopicClick(hit.source.id) })
-                            com.vibe.v2ex.feature.topic.TopicMoveAction(
-                                com.vibe.v2ex.data.model.Topic(id = hit.source.id, title = hit.source.title),
-                            )
                         }
                     }
                 }

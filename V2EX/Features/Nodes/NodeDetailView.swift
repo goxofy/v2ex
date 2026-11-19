@@ -171,11 +171,6 @@ struct NodeDetailView: View {
             }
         }
         .task { await model.load(name: nodeName, token: token.token) }
-        .task(id: model.sorted.map(\.id).description + moves.key(session: session)) {
-            for topic in model.sorted where moves.movedNodes[topic.id] != nil {
-                await moves.refreshMovedNode(topic.id, session: session)
-            }
-        }
         .alert("关注操作失败", isPresented: Binding(
             get: { followError != nil }, set: { if !$0 { followError = nil } }
         )) {
@@ -303,7 +298,6 @@ struct NodeDetailView: View {
                     )
                 }
                 .buttonStyle(.row)
-                .topicMoveAction(for: topic)
             }
         }
     }

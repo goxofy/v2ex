@@ -21,8 +21,23 @@ struct MoveForm {
     let hidden: [String: String]
 }
 
+enum MoveSubmission: Equatable {
+    case submitted(MoveNode), unchanged(MoveNode)
+
+    var node: MoveNode {
+        switch self { case .submitted(let node), .unchanged(let node): return node }
+    }
+
+    var message: String {
+        switch self {
+        case .submitted: return "移动请求已提交"
+        case .unchanged: return "话题已在目标节点，无需移动"
+        }
+    }
+}
+
 enum MoveFailure: Error, LocalizedError {
-    case unavailable, session, denied, changed, rejected, unconfirmed
+    case unavailable, session, denied, changed, rejected, connection, server, response, verification
 
     var errorDescription: String? {
         switch self {
@@ -31,7 +46,10 @@ enum MoveFailure: Error, LocalizedError {
         case .denied: return "当前账号没有此话题的移动权限，或权限已撤销"
         case .changed: return "话题节点已变化，请核对当前节点并重新确认"
         case .rejected: return "服务器未接受移动，请到网页核查"
-        case .unconfirmed: return "移动结果待确认，请先到网页核查，避免重复操作"
+        case .connection: return "提交时网络中断，请到网页查看，勿重复提交"
+        case .server: return "服务器响应异常，请到网页查看，勿重复提交"
+        case .response: return "提交响应异常，请到网页查看，勿重复提交"
+        case .verification: return "网页要求验证，请先在网页完成验证"
         }
     }
 }

@@ -9,10 +9,7 @@ struct MovePreparation {
 final class TopicMoveService {
     private let base: URL
     private let session: URLSession
-    private let wait: (UInt64) async throws -> Void
-
-    init(base: URL, configuration: URLSessionConfiguration = .ephemeral,
-         wait: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }) {
+    init(base: URL, configuration: URLSessionConfiguration = .ephemeral) {
         self.base = base
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
@@ -22,7 +19,6 @@ final class TopicMoveService {
         configuration.timeoutIntervalForRequest = 15
         configuration.timeoutIntervalForResource = 15
         session = URLSession(configuration: configuration)
-        self.wait = wait
     }
 
     deinit { session.invalidateAndCancel() }
@@ -61,7 +57,7 @@ final class TopicMoveService {
     }
 
     func move(id: Int, cookie: String, expectedNode: String, destination: MoveNode, memo: String,
-              sessionCurrent: @MainActor () -> Bool) async throws -> MoveNode {
+              sessionCurrent: @MainActor () -> Bool) async throws -> MoveSubmission {
         var submitted = false
         do {
             try validate(id: id, cookie: cookie)
@@ -70,7 +66,7 @@ final class TopicMoveService {
             let topic = try await permission(id: id, cookie: cookie)
             guard topic.canMove else { throw MoveFailure.denied }
             guard topic.node.name == expectedNode else { throw MoveFailure.changed }
-            if topic.node.name == destination.name { return topic.node }
+            if topic.node.name == destination.name { return .unchanged(topic.node) }
             let form = try TopicMovePage(html: await get("/move/topic/\(id)", cookie: cookie), base: base).form(id: id)
             guard await sessionCurrent() else { throw MoveFailure.session }
             var request = try request("/move/topic/\(id)", cookie: cookie)
@@ -85,53 +81,35 @@ final class TopicMoveService {
             request.setValue(String(body.count), forHTTPHeaderField: "Content-Length")
             try Task.checkCancellation()
             submitted = true
-            let response: (Data, URLResponse)?
-            do { response = try await session.data(for: request, delegate: MoveRequestDelegate()) }
-            catch {
-                if error.isCancellation { throw error }
-                response = nil
+            let (data, raw) = try await session.data(for: request, delegate: MoveRequestDelegate())
+            guard let http = raw as? HTTPURLResponse else { throw MoveFailure.connection }
+            if [401, 403].contains(http.statusCode) { throw MoveFailure.denied }
+            if http.statusCode == 408 || http.statusCode >= 500 { throw MoveFailure.server }
+            if (300..<400).contains(http.statusCode) {
+                guard [301, 302, 303, 307, 308].contains(http.statusCode),
+                      let location = http.value(forHTTPHeaderField: "Location"),
+                      let target = URL(string: location, relativeTo: base)?.absoluteURL else { throw MoveFailure.response }
+                if ReplyPage.sameOrigin(target, base), ["/signin", "/2fa"].contains(target.path) { throw MoveFailure.session }
+                guard allowed(target, path: "/t/\(id)") else { throw MoveFailure.response }
+            } else {
+                guard (200..<300).contains(http.statusCode) else { throw MoveFailure.rejected }
+                guard let html = String(data: data, encoding: .utf8) else { throw MoveFailure.response }
+                let page = TopicMovePage(html: html, base: base)
+                if page.requiresVerification { throw MoveFailure.verification }
+                try page.checkPage()
             }
-            if let (data, raw) = response, let http = raw as? HTTPURLResponse {
-                if (400..<500).contains(http.statusCode), http.statusCode != 408 {
-                    throw [401, 403].contains(http.statusCode) ? MoveFailure.denied : MoveFailure.rejected
-                }
-                if (300..<400).contains(http.statusCode) {
-                    guard let location = http.value(forHTTPHeaderField: "Location"),
-                          let target = URL(string: location, relativeTo: base)?.absoluteURL,
-                          allowed(target, path: "/t/\(id)") else { throw MoveFailure.unconfirmed }
-                }
-                if http.statusCode == 200 {
-                    try TopicMovePage(html: String(data: data, encoding: .utf8) ?? "", base: base).checkPage()
-                }
-            }
-            for attempt in 0..<3 {
-                if attempt > 0 { try await wait(UInt64(attempt) * 1_000_000_000) }
-                guard await sessionCurrent() else { throw MoveFailure.unconfirmed }
-                do {
-                    let html = try await confirmation(id: id, cookie: cookie)
-                    let latest = try TopicMovePage(html: html, base: base).topic(id: id)
-                    if latest.node.name == destination.name, await sessionCurrent() { return latest.node }
-                } catch { if error.isCancellation { throw error } }
-            }
-            throw MoveFailure.unconfirmed
+            guard await sessionCurrent() else { throw MoveFailure.session }
+            return .submitted(destination)
         } catch {
             if error.isCancellation { throw error }
             if let issue = error as? MovePermissionIssue { throw issue.operationFailure }
-            throw (error as? MoveFailure) ?? (submitted ? MoveFailure.unconfirmed : MoveFailure.unavailable)
+            throw (error as? MoveFailure) ?? (submitted ? MoveFailure.connection : MoveFailure.unavailable)
         }
     }
 
-    private func confirmation(id: Int, cookie: String) async throws -> String {
-        try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask { try await self.get("/t/\(id)", cookie: cookie, timeout: 5) }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 5_000_000_000)
-                throw MoveFailure.unavailable
-            }
-            defer { group.cancelAll() }
-            guard let html = try await group.next() else { throw MoveFailure.unavailable }
-            return html
-        }
+    func currentNode(id: Int, cookie: String) async throws -> MoveNode {
+        try validate(id: id, cookie: cookie)
+        return try TopicMovePage(html: await get("/t/\(id)", cookie: cookie, timeout: 5), base: base).topic(id: id).node
     }
 
     private func validate(id: Int, cookie: String) throws {

@@ -191,7 +191,6 @@ struct SearchView: View {
                         hitRow(hit)
                     }
                     .buttonStyle(.row)
-                    .topicMoveAction(for: V2Topic(id: hit.id, title: hit.title, replies: hit.replies, node: .stub(name: hit.node)))
                     .contextMenu {
                         ModerationMenuItems(
                             target: .topic(id: hit.id, author: hit.member, excerpt: hit.title),

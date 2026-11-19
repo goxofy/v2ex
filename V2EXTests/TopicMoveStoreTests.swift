@@ -220,6 +220,81 @@ final class TopicMoveStoreTests: XCTestCase {
         XCTAssertTrue(store.diagnostics.isEmpty)
     }
 
+    func testCustomShortcutsAreUnboundedOrderedAndPersistent() -> Void {
+        let defaults = isolatedDefaults()
+        let store = TopicMoveStore(defaults: defaults)
+        let nodes = (0..<80).map { MoveNode(name: "node\($0)", title: "节点\($0)") }
+        XCTAssertEqual(store.shortcuts(defaults: nodes, directory: []), nodes)
+        let custom = Array(nodes.reversed())
+        store.saveShortcuts(custom + [custom[0], MoveNode(name: "bad/path", title: "Invalid")])
+        let restored = TopicMoveStore(defaults: defaults)
+        XCTAssertEqual(restored.shortcuts(defaults: [], directory: []), custom)
+        restored.saveShortcuts(Array(custom.dropFirst()))
+        XCTAssertEqual(restored.customShortcuts?.count, 79)
+        XCTAssertEqual(TopicMoveStore(defaults: defaults).customShortcuts?.first, custom[1])
+    }
+
+    func testEmptyShortcutsAndRestoreDefaultAreDifferent() -> Void {
+        let defaults = isolatedDefaults()
+        let store = TopicMoveStore(defaults: defaults)
+        let website = [MoveNode(name: "qna", title: "问与答")]
+        store.saveShortcuts([])
+        XCTAssertEqual(TopicMoveStore(defaults: defaults).shortcuts(defaults: website, directory: []), [])
+        store.saveShortcuts(nil)
+        XCTAssertEqual(TopicMoveStore(defaults: defaults).shortcuts(defaults: website, directory: []), website)
+    }
+
+    func testShortcutsUpdateTitlesWithoutDroppingMissingNodes() -> Void {
+        let store = TopicMoveStore(defaults: isolatedDefaults())
+        store.saveShortcuts([MoveNode(name: "qna", title: "Old"), MoveNode(name: "missing", title: "Saved")])
+        let current = MoveNode(name: "qna", title: "问与答", aliases: ["qa"])
+        XCTAssertEqual(store.shortcuts(defaults: [], directory: [current]), [current, MoveNode(name: "missing", title: "Saved")])
+    }
+
+    func testCorruptOrOtherOriginShortcutsDoNotOverrideDefaults() -> Void {
+        let defaults = isolatedDefaults()
+        defaults.set(Data("invalid".utf8), forKey: "topicMove.shortcuts.\(V2EXEndpoint.base)")
+        defaults.set(try? JSONEncoder().encode([MoveNode(name: "private", title: "Other")]), forKey: "topicMove.shortcuts.https://other.invalid")
+        let store = TopicMoveStore(defaults: defaults)
+        let website = [MoveNode(name: "qna", title: "问与答")]
+        XCTAssertNil(store.customShortcuts)
+        XCTAssertEqual(store.shortcuts(defaults: website, directory: []), website)
+    }
+
+    func testSubmittedNodeIsTransientAndExpires() -> Void {
+        var clock = Date()
+        let defaults = isolatedDefaults()
+        let store = TopicMoveStore(defaults: defaults, now: { clock })
+        let node = MoveNode(name: "sandbox", title: "沙盒")
+        store.submitted(.submitted(node), topicID: 123)
+        XCTAssertEqual(store.movedNodes[123], node)
+        XCTAssertNil(TopicMoveStore(defaults: defaults).movedNodes[123])
+        clock = clock.addingTimeInterval(301)
+        store.expireNodes()
+        XCTAssertNil(store.movedNodes[123])
+    }
+
+    func testConfirmedNodeCacheExpiresAfterRestart() -> Void {
+        var clock = Date()
+        let defaults = isolatedDefaults()
+        let store = TopicMoveStore(defaults: defaults, now: { clock })
+        store.record(MoveNode(name: "sandbox", title: "沙盒"), topicID: 123)
+        clock = clock.addingTimeInterval(301)
+        XCTAssertTrue(TopicMoveStore(defaults: defaults, now: { clock }).movedNodes.isEmpty)
+    }
+
+    func testDetailProbeCompletesAndReusesValidPermission() async -> Void {
+        var count = 0
+        let account = session()
+        let store = TopicMoveStore(defaults: isolatedDefaults(), fetchPermission: { _, _, _ in
+            count += 1
+            return MoveTopic(node: MoveNode(name: "qna", title: "问与答"), canMove: true)
+        })
+        await store.watch(123, session: account)
+        await store.watch(123, session: account)
+        XCTAssertEqual(count, 1)
+    }
+
     func testOnlyConfirmedNodeMetadataPersists() {
         let defaults = isolatedDefaults()
         let store = TopicMoveStore(defaults: defaults)

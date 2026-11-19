@@ -19,7 +19,7 @@ final class TopicMoveTests: XCTestCase {
         MoveProtocol.requests = []
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MoveProtocol.self]
-        service = TopicMoveService(base: base, configuration: configuration, wait: { _ in })
+        service = TopicMoveService(base: base, configuration: configuration)
     }
 
     override func tearDown() {
@@ -43,7 +43,7 @@ final class TopicMoveTests: XCTestCase {
         MoveProtocol.responses.append((status, html, location))
     }
 
-    private func move(current: String = "qna", valid: Bool = true) async throws -> MoveNode {
+    private func move(current: String = "qna", valid: Bool = true) async throws -> MoveSubmission {
         try await service.move(id: 123, cookie: "session=fake", expectedNode: current, destination: target,
                                memo: "中文 + & =\n备注", sessionCurrent: { valid })
     }
@@ -100,13 +100,13 @@ final class TopicMoveTests: XCTestCase {
         XCTAssertEqual(result.form.hidden["once"], "safe-token")
         XCTAssertTrue(result.nodes[0].matches("TEST"))
     }
-    func testMobileMoveRevalidatesAndConfirmsWithoutReposting() async throws -> Void {
+    func testMobileMoveRevalidatesAndReturnsSubmission() async throws -> Void {
         enqueue(mobile(topic(allowed: false))); enqueue(mobile(form)); enqueue(mobile(form))
         enqueue("", status: 302, location: "/t/123")
         enqueue(mobile(topic(allowed: false))); enqueue(mobile(topic("sandbox", allowed: false)))
         let result = try await move()
-        XCTAssertEqual(result.name, "sandbox")
-        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "GET", "POST", "GET", "GET"])
+        XCTAssertEqual(result.node.name, "sandbox")
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "GET", "POST"])
     }
     func testMobileOrdinaryAccountCannotGainPermission() async -> Void {
         enqueue(mobile(topic(allowed: false))); enqueue("", status: 403)
@@ -223,34 +223,35 @@ final class TopicMoveTests: XCTestCase {
         enqueue(topic(allowed: false)); enqueue(form); enqueue(form)
         enqueue("", status: 302, location: "/t/123"); enqueue(topic("sandbox", allowed: false))
         let result = try await move()
-        XCTAssertEqual(result.name, "sandbox")
-        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "GET", "POST", "GET"])
+        XCTAssertEqual(result.node.name, "sandbox")
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "GET", "POST"])
     }
-    func testDirect200StillUsesReadOnlyVerification() async throws {
+    func testDirect200ReturnsSubmissionWithoutPolling() async throws {
         enqueue(topic()); enqueue(form); enqueue(topic("sandbox")); enqueue(topic("sandbox"))
         let result = try await move()
-        XCTAssertEqual(result.name, "sandbox")
-        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "POST", "GET"])
+        XCTAssertEqual(result.node.name, "sandbox")
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "POST"])
     }
     func test307IsNeverReplayed() async throws {
         enqueue(topic()); enqueue(form); enqueue("", status: 307, location: "/t/123"); enqueue(topic("sandbox"))
         _ = try await move()
-        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "POST", "GET"])
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "POST"])
     }
-    func testDelayedConfirmationOnlyRetriesGet() async throws {
+    func testSubmittedMoveDoesNotWaitForNodeChange() async throws {
         enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/t/123")
         enqueue(topic()); enqueue(topic()); enqueue(topic("sandbox"))
         _ = try await move()
-        XCTAssertEqual(MoveProtocol.requests.count, 6)
+        XCTAssertEqual(MoveProtocol.requests.count, 3)
     }
-    func test503NeverReplaysPost() async throws {
-        enqueue(topic()); enqueue(form); enqueue("", status: 503); enqueue(topic("sandbox"))
-        _ = try await move()
-        XCTAssertEqual(MoveProtocol.requests.count, 4)
+    func test503NeverReplaysPost() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 503)
+        await expect(.server) { _ = try await self.move() }
+        XCTAssertEqual(MoveProtocol.requests.count, 3)
     }
-    func test408NeverReplaysPost() async throws {
-        enqueue(topic()); enqueue(form); enqueue("", status: 408); enqueue(topic("sandbox"))
-        _ = try await move()
+    func test408NeverReplaysPost() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 408)
+        await expect(.server) { _ = try await self.move() }
+        XCTAssertEqual(MoveProtocol.requests.count, 3)
     }
     func testForbiddenStopsWithoutRetry() async {
         enqueue(topic()); enqueue(form); enqueue("", status: 403)
@@ -284,19 +285,40 @@ final class TopicMoveTests: XCTestCase {
     func testUnknownHiddenFieldIsRejected() throws {
         XCTAssertThrowsError(try TopicMovePage(html: form.replacingOccurrences(of: "</form>", with: "<input type='hidden' name='unrecognized' value='1'></form>"), base: base).form(id: 123))
     }
-    func testCrossOriginRedirectRemainsUnconfirmed() async {
+    func testCrossOriginRedirectIsAnInvalidResponse() async {
         enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "https://example.invalid/t/123")
-        await expect(.unconfirmed) { _ = try await self.move() }
+        await expect(.response) { _ = try await self.move() }
         XCTAssertEqual(MoveProtocol.requests.count, 3)
     }
-    func testBodyNodeLinkDoesNotConfirmSuccess() async {
+    func testSubmissionIsNotVerifiedNodeSuccess() async throws -> Void {
         enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/t/123")
-        for _ in 0..<3 { enqueue(topic(extra: "<div class='topic_content'><a href='/go/sandbox'>沙盒</a></div>")) }
-        await expect(.unconfirmed) { _ = try await self.move() }
+        let result = try await move()
+        XCTAssertEqual(result, .submitted(target))
+        XCTAssertEqual(result.message, "移动请求已提交")
+        XCTAssertEqual(MoveProtocol.requests.count, 3)
     }
-    func testTransientReadFailureCanRecover() async throws {
-        enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/t/123"); enqueue("", status: 503); enqueue(topic("sandbox"))
-        _ = try await move()
+    func testPostNetworkFailureNeverRetries() async -> Void {
+        enqueue(topic()); enqueue(form)
+        await expect(.connection) { _ = try await self.move() }
+        XCTAssertEqual(MoveProtocol.requests.count, 3)
+    }
+    func testPostLoginAndVerificationAreNotSubmissionSuccess() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/signin")
+        await expect(.session) { _ = try await self.move() }
+    }
+    func testPost200ChallengeIsNotSubmissionSuccess() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("<title>Just a moment</title>")
+        await expect(.verification) { _ = try await self.move() }
+    }
+    func testPost200BusinessErrorIsNotSubmissionSuccess() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("<div class='problem'>Rejected</div>")
+        await expect(.rejected) { _ = try await self.move() }
+    }
+    func testReadOnlyNodeRefreshDoesNotProbeMoveForm() async throws -> Void {
+        enqueue(mobile(topic("sandbox", allowed: false)))
+        let node = try await service.currentNode(id: 123, cookie: "session=fake")
+        XCTAssertEqual(node.name, "sandbox")
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET"])
     }
     #if os(macOS)
     func testRealTransportSendsBodyAndNeverReplays503() async throws {
@@ -313,13 +335,14 @@ final class TopicMoveTests: XCTestCase {
         let data = pipe.fileHandleForReading.availableData
         let port = try XCTUnwrap(Int(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
         let local = URL(string: "http://127.0.0.1:\(port)")!
-        let client = TopicMoveService(base: local, wait: { _ in })
-        let result = try await client.move(id: 123, cookie: "session=fake", expectedNode: "qna", destination: target,
-                                           memo: "中文 + & =\n备注", sessionCurrent: { true })
-        XCTAssertEqual(result.name, "sandbox")
+        let client = TopicMoveService(base: local)
+        await expect(.server) {
+            _ = try await client.move(id: 123, cookie: "session=fake", expectedNode: "qna", destination: self.target,
+                                      memo: "中文 + & =\n备注", sessionCurrent: { true })
+        }
         let (records, _) = try await URLSession.shared.data(from: local.appendingPathComponent("records"))
         let entries = try XCTUnwrap(JSONSerialization.jsonObject(with: records) as? [[String: String]])
-        XCTAssertEqual(entries.map { $0["method"] }, ["GET", "GET", "POST", "GET"])
+        XCTAssertEqual(entries.map { $0["method"] }, ["GET", "GET", "POST"])
         let post = try XCTUnwrap(entries.first { $0["method"] == "POST" })
         XCTAssertEqual(post["cookie"], "session=fake")
         var components = URLComponents()
