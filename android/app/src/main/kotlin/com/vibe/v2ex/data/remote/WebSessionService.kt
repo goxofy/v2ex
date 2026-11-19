@@ -88,9 +88,7 @@ class WebSessionService @Inject constructor(
 
     private val loginVerifier: WebLoginVerifier by lazy { WebLoginVerifier(okHttpClient) }
 
-    /** Does not persist anything; challenge pages are inconclusive, not signed out. */
-    suspend fun verifyCookie(candidate: WebLoginCandidate): WebSessionVerification = loginVerifier.verify(candidate)
-
+    /** Background check only; a challenge cannot invalidate the saved browser-confirmed session. */
     suspend fun verifySession(): WebSessionVerification {
         if (!secureStore.isWebSessionActive) return WebSessionVerification.SIGNED_OUT
         // Older installs have no captured UA. Keep their previous OkHttp identity until a new login.
