@@ -506,7 +506,6 @@ struct ProfileView: View {
                     TopicRow(topic: topic, showsNode: true)
                 }
                 .buttonStyle(.row)
-                .topicMoveAction(for: topic)
             }
         }
     }

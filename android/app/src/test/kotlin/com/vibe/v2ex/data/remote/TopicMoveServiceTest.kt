@@ -24,7 +24,7 @@ class TopicMoveServiceTest {
     @Before fun setup(): Unit {
         server = MockWebServer()
         server.start()
-        service = TopicMoveService(OkHttpClient(), server.url("/"), wait = {})
+        service = TopicMoveService(OkHttpClient(), server.url("/"))
     }
 
     @After fun teardown(): Unit {
@@ -48,7 +48,7 @@ class TopicMoveServiceTest {
         try { block(); fail("Expected $kind") } catch (error: MoveFailure) { assertEquals(kind, error.kind) }
     }
 
-    private suspend fun move(current: String = "qna", valid: () -> Boolean = { true }): MoveNode =
+    private suspend fun move(current: String = "qna", valid: () -> Boolean = { true }): MoveSubmission =
         service.move(123, "session=fake", current, target, "中文 + & =\n备注", valid)
 
     @Test fun permissionRequiresOwnedHeader(): Unit = runBlocking {
@@ -98,13 +98,13 @@ class TopicMoveServiceTest {
         assertEquals("safe-token", result.form.hidden["once"])
         assertTrue(result.nodes.single().matches("TEST"))
     }
-    @Test fun mobileMoveRevalidatesAndConfirmsWithoutReposting(): Unit = runBlocking {
+    @Test fun mobileMoveRevalidatesAndReturnsSubmission(): Unit = runBlocking {
         enqueue(mobile(topic(allowed = false))); enqueue(mobile(form)); enqueue(mobile(form))
         enqueue("", 302, "/t/123")
         enqueue(mobile(topic(allowed = false))); enqueue(mobile(topic("sandbox", allowed = false)))
-        assertEquals("sandbox", move().name)
-        val requests = (0 until 6).map { server.takeRequest() }
-        assertEquals(listOf("GET", "GET", "GET", "POST", "GET", "GET"), requests.map { it.method })
+        assertEquals("sandbox", move().node.name)
+        val requests = (0 until 4).map { server.takeRequest() }
+        assertEquals(listOf("GET", "GET", "GET", "POST"), requests.map { it.method })
     }
     @Test fun mobileOrdinaryAccountCannotGainPermission(): Unit = failure(MoveFailure.Kind.DENIED) {
         enqueue(mobile(topic(allowed = false))); enqueue("", 403)
@@ -195,20 +195,20 @@ class TopicMoveServiceTest {
     @Test fun moveWithoutHeaderLinkRevalidatesAndPostsOnce(): Unit = runBlocking {
         enqueue(topic(allowed = false)); enqueue(form); enqueue(form)
         enqueue("", 302, "/t/123"); enqueue(topic("sandbox", allowed = false))
-        assertEquals("sandbox", move().name)
-        val requests = (0 until 5).map { server.takeRequest() }
-        assertEquals(listOf("GET", "GET", "GET", "POST", "GET"), requests.map { it.method })
-    }
-    @Test fun direct200StillVerifiesUsingGet(): Unit = runBlocking {
-        enqueue(topic()); enqueue(form); enqueue(topic("sandbox")); enqueue(topic("sandbox"))
-        assertEquals("sandbox", move().name)
-        assertEquals(4, server.requestCount)
-    }
-    @Test fun redirectedPostIsFollowedOnlyWithGet(): Unit = runBlocking {
-        enqueue(topic()); enqueue(form); enqueue("", 307, "/t/123"); enqueue(topic("sandbox"))
-        assertEquals("sandbox", move().name)
+        assertEquals("sandbox", move().node.name)
         val requests = (0 until 4).map { server.takeRequest() }
-        assertEquals(listOf("GET", "GET", "POST", "GET"), requests.map { it.method })
+        assertEquals(listOf("GET", "GET", "GET", "POST"), requests.map { it.method })
+    }
+    @Test fun direct200ReturnsSubmissionWithoutPolling(): Unit = runBlocking {
+        enqueue(topic()); enqueue(form); enqueue(topic("sandbox")); enqueue(topic("sandbox"))
+        assertEquals("sandbox", move().node.name)
+        assertEquals(3, server.requestCount)
+    }
+    @Test fun redirectedPostIsNotFollowed(): Unit = runBlocking {
+        enqueue(topic()); enqueue(form); enqueue("", 307, "/t/123"); enqueue(topic("sandbox"))
+        assertEquals("sandbox", move().node.name)
+        val requests = (0 until 3).map { server.takeRequest() }
+        assertEquals(listOf("GET", "GET", "POST"), requests.map { it.method })
         assertEquals("session=fake", requests[2].headers["Cookie"])
         val fields = requests[2].body!!.utf8().split("&").associate { field ->
             val parts = field.split("=", limit = 2)
@@ -218,20 +218,19 @@ class TopicMoveServiceTest {
         assertEquals("safe-token", fields["once"])
         assertEquals("sandbox", fields["destination"])
     }
-    @Test fun delayedResultDoesNotResubmit(): Unit = runBlocking {
+    @Test fun submittedMoveDoesNotWaitForNodeChange(): Unit = runBlocking {
         enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123")
         enqueue(topic()); enqueue(topic()); enqueue(topic("sandbox"))
-        assertEquals("sandbox", move().name)
-        assertEquals(6, server.requestCount)
+        assertEquals("sandbox", move().node.name)
+        assertEquals(3, server.requestCount)
     }
-    @Test fun serviceUnavailableNeverReplays(): Unit = runBlocking {
-        enqueue(topic()); enqueue(form); enqueue("", 503); enqueue(topic("sandbox"))
-        assertEquals("sandbox", move().name)
-        assertEquals(4, server.requestCount)
+    @Test fun serviceUnavailableNeverReplays(): Unit = failure(MoveFailure.Kind.SERVER) {
+        enqueue(topic()); enqueue(form); enqueue("", 503)
+        try { move() } finally { assertEquals(3, server.requestCount) }
     }
-    @Test fun timeoutStatusNeverReplays(): Unit = runBlocking {
-        enqueue(topic()); enqueue(form); enqueue("", 408); enqueue(topic("sandbox"))
-        assertEquals("sandbox", move().name)
+    @Test fun timeoutStatusNeverReplays(): Unit = failure(MoveFailure.Kind.SERVER) {
+        enqueue(topic()); enqueue(form); enqueue("", 408)
+        try { move() } finally { assertEquals(3, server.requestCount) }
     }
     @Test fun forbiddenStopsWithoutRetry(): Unit = failure(MoveFailure.Kind.DENIED) {
         enqueue(topic()); enqueue(form); enqueue("", 403)
@@ -265,47 +264,52 @@ class TopicMoveServiceTest {
     @Test fun missingFormNeverPosts(): Unit = failure(MoveFailure.Kind.DENIED) {
         enqueue(topic()); enqueue("<div id='Main'></div>"); move()
     }
-    @Test fun crossOriginPostRedirectIsUnconfirmed(): Unit = failure(MoveFailure.Kind.UNCONFIRMED) {
+    @Test fun crossOriginPostRedirectIsInvalid(): Unit = failure(MoveFailure.Kind.RESPONSE) {
         enqueue(topic()); enqueue(form); enqueue("", 302, "https://example.invalid/t/123"); move()
     }
-    @Test fun unchangedTopicIsUnconfirmed(): Unit = failure(MoveFailure.Kind.UNCONFIRMED) {
+    @Test fun submissionIsNotVerifiedNodeSuccess(): Unit = runBlocking {
         enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123")
-        repeat(3) { enqueue(topic(extra = "<div class='topic_content'><a href='/go/sandbox'>沙盒</a></div>")) }
-        move()
+        val result = move()
+        assertTrue(result is MoveSubmission.Submitted)
+        assertEquals("移动请求已提交", result.message)
+        assertEquals(3, server.requestCount)
     }
-    @Test fun transientReadFailureCanRecover(): Unit = runBlocking {
-        enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123"); enqueue("", 503); enqueue(topic("sandbox"))
-        assertEquals("sandbox", move().name)
-    }
-    @Test fun disconnectedPostCanBeConfirmedWithoutReplay(): Unit = runBlocking {
+    @Test fun disconnectedPostNeverReplays(): Unit = failure(MoveFailure.Kind.CONNECTION) {
         enqueue(topic()); enqueue(form)
         server.enqueue(MockResponse.Builder().onResponseStart(mockwebserver3.SocketEffect.CloseSocket()).build())
-        enqueue(topic("sandbox"))
-        assertEquals("sandbox", move().name)
-        assertEquals(4, server.requestCount)
+        try { move() } finally { assertEquals(3, server.requestCount) }
     }
-    @Test fun cancellationStopsReadOnlyConfirmation(): Unit = runBlocking {
-        enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123")
+    @Test fun postLoginIsNotSubmissionSuccess(): Unit = failure(MoveFailure.Kind.SESSION) {
+        enqueue(topic()); enqueue(form); enqueue("", 302, "/signin"); move()
+    }
+    @Test fun post200ChallengeIsNotSubmissionSuccess(): Unit = failure(MoveFailure.Kind.VERIFICATION) {
+        enqueue(topic()); enqueue(form); enqueue("<title>Just a moment</title>"); move()
+    }
+    @Test fun post200BusinessErrorIsNotSubmissionSuccess(): Unit = failure(MoveFailure.Kind.REJECTED) {
+        enqueue(topic()); enqueue(form); enqueue("<div id='Wrapper'><div class='content'><div class='problem'>Rejected</div></div></div>"); move()
+    }
+    @Test fun readOnlyNodeRefreshDoesNotProbeMoveForm(): Unit = runBlocking {
+        enqueue(mobile(topic("sandbox", allowed = false)))
+        assertEquals("sandbox", service.currentNode(123, "session=fake").name)
+        assertEquals(1, server.requestCount)
+        assertEquals("GET", server.takeRequest().method)
+    }
+    @Test fun cancellationStopsSubmission(): Unit = runBlocking {
+        enqueue(topic()); enqueue(form)
         server.enqueue(MockResponse.Builder().onResponseStart(mockwebserver3.SocketEffect.Stall).build())
         val job = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { move() }
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            repeat(4) { assertNotNull(server.takeRequest(2, TimeUnit.SECONDS)) }
+            repeat(3) { assertNotNull(server.takeRequest(2, TimeUnit.SECONDS)) }
         }
         job.cancel()
         try { job.await(); fail("Expected cancellation") } catch (_: kotlinx.coroutines.CancellationException) { }
-        assertEquals(4, server.requestCount)
-    }
-    @Test fun confirmationHasBoundedDeadline(): Unit = failure(MoveFailure.Kind.UNCONFIRMED) {
-        enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123")
-        repeat(3) { server.enqueue(MockResponse.Builder().onResponseStart(mockwebserver3.SocketEffect.Stall).build()) }
-        val start = System.nanoTime()
-        try { move() } finally {
-            assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - start) < 20)
-        }
+        assertEquals(3, server.requestCount)
     }
     @Test fun sameNodeDoesNotPost(): Unit = runBlocking {
         enqueue(topic("sandbox"))
-        assertEquals("sandbox", move("sandbox").name)
+        val result = move("sandbox")
+        assertTrue(result is MoveSubmission.Unchanged)
+        assertEquals("sandbox", result.node.name)
         assertEquals(1, server.requestCount)
     }
 }

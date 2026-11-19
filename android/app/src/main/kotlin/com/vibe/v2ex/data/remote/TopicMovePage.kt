@@ -12,6 +12,11 @@ internal data class MoveNode(val name: String, val title: String, val aliases: L
 internal data class MoveForm(val shortcuts: List<MoveNode>, val hidden: Map<String, String>)
 internal data class MoveTopic(val node: MoveNode, val canMove: Boolean)
 
+internal sealed class MoveSubmission(val node: MoveNode, val message: String) {
+    class Submitted(node: MoveNode) : MoveSubmission(node, "移动请求已提交")
+    class Unchanged(node: MoveNode) : MoveSubmission(node, "话题已在目标节点，无需移动")
+}
+
 internal class MoveFailure(val kind: Kind) : IllegalStateException(kind.message) {
     enum class Kind(val message: String) {
         UNAVAILABLE("无法读取移动权限或表单，请到网页核查"),
@@ -19,7 +24,10 @@ internal class MoveFailure(val kind: Kind) : IllegalStateException(kind.message)
         DENIED("当前账号没有此话题的移动权限，或权限已撤销"),
         CHANGED("话题节点已变化，请核对当前节点并重新确认"),
         REJECTED("服务器未接受移动，请到网页核查"),
-        UNCONFIRMED("移动结果待确认，请先到网页核查，避免重复操作"),
+        CONNECTION("提交时网络中断，请到网页查看，勿重复提交"),
+        SERVER("服务器响应异常，请到网页查看，勿重复提交"),
+        RESPONSE("提交响应异常，请到网页查看，勿重复提交"),
+        VERIFICATION("网页要求验证，请先在网页完成验证"),
     }
 }
 
@@ -80,10 +88,13 @@ internal class TopicMovePage(html: String, private val base: HttpUrl) {
         if (document.select("#Main .problem,#Main #problem,#Wrapper > .content .problem,#Wrapper > .content #problem").isNotEmpty()) {
             throw MoveFailure(MoveFailure.Kind.REJECTED)
         }
-        if (document.title().contains("just a moment", true) || document.title().contains("attention required", true)) {
+        if (requiresVerification()) {
             throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
         }
     }
+
+    fun requiresVerification(): Boolean = document.title().contains("just a moment", true) ||
+        document.title().contains("attention required", true) || document.select("#challenge-form").isNotEmpty()
 
     private fun mainBoxes(): List<Element> {
         val mains = document.select("#Main")

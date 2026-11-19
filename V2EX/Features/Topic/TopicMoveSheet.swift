@@ -2,9 +2,9 @@ import SwiftUI
 
 struct TopicMoveSheet: View {
     let topic: V2Topic
+    var onSubmitted: (MoveSubmission) -> Void = { _ in }
     @EnvironmentObject private var session: V2EXSessionStore
     @EnvironmentObject private var moves: TopicMoveStore
-    @EnvironmentObject private var cache: TopicDetailCacheStore
     @Environment(\.dismiss) private var dismiss
     @State private var preparation: MovePreparation?
     @State private var selected: MoveNode?
@@ -14,8 +14,11 @@ struct TopicMoveSheet: View {
     @State private var busy = false
     @State private var blocked = false
     @State private var confirm = false
+    @State private var editingShortcuts = false
     @State private var operation: Task<Void, Never>?
     @State private var identity = ""
+    @FocusState private var focused: Field?
+    private enum Field: Hashable { case search, memo }
 
     var body: some View {
         NavigationStack {
@@ -28,59 +31,90 @@ struct TopicMoveSheet: View {
                 if let error {
                     Section {
                         Text(error).foregroundStyle(.red)
-                        Link("到网页核查", destination: V2EXEndpoint.url("/t/\(topic.id)"))
+                        Link("到网页查看", destination: V2EXEndpoint.url("/t/\(topic.id)"))
                     }
                 }
                 if let preparation {
-                    if !preparation.form.shortcuts.isEmpty {
-                        Section("常用节点") {
-                            ScrollView(.horizontal) {
-                                HStack {
-                                    ForEach(preparation.form.shortcuts) { node in
-                                        Button(node.title) { selected = node }
-                                            .buttonStyle(.bordered)
-                                            .disabled(blocked)
-                                    }
+                    Section {
+                        let nodes = moves.shortcuts(defaults: preparation.form.shortcuts, directory: preparation.nodes)
+                        if nodes.isEmpty { Text("尚未设置常用节点，点击编辑添加").foregroundStyle(.secondary) }
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 100))], alignment: .leading, spacing: 8) {
+                            ForEach(nodes) { node in
+                                Button { select(node) } label: {
+                                    Text(node.title).frame(maxWidth: .infinity)
                                 }
+                                .buttonStyle(.bordered)
+                                .tint(selected?.name == node.name ? .accentColor : .secondary)
+                                .disabled(blocked)
                             }
+                        }
+                    } header: {
+                        HStack {
+                            Text("常用节点")
+                            Spacer()
+                            Button("编辑") { focused = nil; editingShortcuts = true }.disabled(blocked)
                         }
                     }
                     Section("目标节点") {
                         TextField("搜索节点名称、英文标识或别名", text: $query)
-                        if let selected { Label("\(selected.title) / \(selected.name)", systemImage: "checkmark.circle.fill") }
+                            .focused($focused, equals: .search).disabled(blocked)
+                        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            let results = preparation.nodes.filter { $0.matches(query) }
+                            if results.isEmpty { Text("没有匹配的节点").foregroundStyle(.secondary) }
+                            else {
+                                ScrollView {
+                                    LazyVStack(alignment: .leading, spacing: 0) {
+                                        ForEach(results) { node in
+                                            Button { select(node) } label: {
+                                                HStack {
+                                                    Text("\(node.title) / \(node.name)")
+                                                    Spacer()
+                                                    if selected?.name == node.name { Image(systemName: "checkmark") }
+                                                }.padding(.vertical, 12).contentShape(Rectangle())
+                                            }.buttonStyle(.plain).disabled(blocked)
+                                            Divider()
+                                        }
+                                    }
+                                }.frame(height: min(CGFloat(results.count) * 48, 240))
+                            }
+                        }
+                        if let selected { Label("已选：\(selected.title) / \(selected.name)", systemImage: "checkmark.circle.fill") }
                     }
                     Section("操作备注（可选）") {
-                        TextField("备注", text: $memo, axis: .vertical).lineLimit(2...5).disabled(blocked)
+                        TextField("备注", text: $memo, axis: .vertical).lineLimit(2...5)
+                            .focused($focused, equals: .memo).disabled(blocked)
                         Text("\(memo.count)/2000").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Section {
-                        Button("移动主题") { confirm = true }
-                            .disabled(selected == nil || selected?.name == preparation.topic.node.name || memo.count > 2000 || blocked)
-                    }
-                    Section("搜索结果（最多显示 60 项）") {
-                        ForEach(Array(preparation.nodes.filter { query.isEmpty || $0.matches(query) }.prefix(60))) { node in
-                            Button { selected = node } label: {
-                                HStack {
-                                    Text("\(node.title) / \(node.name)")
-                                    Spacer()
-                                    if selected?.name == node.name { Image(systemName: "checkmark") }
-                                }
-                            }
-                            .disabled(blocked)
-                        }
                     }
                 } else if !busy, !blocked {
                     Button("重新读取权限与表单") { load() }
                 }
             }
             .disabled(busy)
+            .scrollDismissesKeyboard(.interactively)
+            .safeAreaInset(edge: .bottom) {
+                if let preparation {
+                    Button {
+                        focused = nil
+                        confirm = true
+                    } label: {
+                        Text(busy ? "正在处理…" : "移动主题").frame(maxWidth: .infinity).padding(.vertical, 6)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy || blocked || selected == nil || selected?.name == preparation.topic.node.name || memo.count > 2000)
+                    .padding().background(.regularMaterial)
+                }
+            }
             .navigationTitle("移动主题")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(busy) } }
-            .confirmationDialog("确认移动主题？", isPresented: $confirm, titleVisibility: .visible) {
-                Button("确认移动") { submit() }
+            .alert("确认移动主题？", isPresented: $confirm) {
                 Button("取消", role: .cancel) {}
+                Button("确认移动") { submit() }
             } message: {
-                Text("\(preparation?.topic.node.title ?? "") → \(selected?.title ?? "")\n\(topic.title)")
+                Text("\(topic.title)\n\(preparation?.topic.node.title ?? "") → \(selected?.title ?? "")")
+            }
+            .sheet(isPresented: $editingShortcuts) {
+                if let preparation { MoveShortcutsEditor(preparation: preparation) }
             }
         }
         .interactiveDismissDisabled(busy)
@@ -89,7 +123,13 @@ struct TopicMoveSheet: View {
         .onDisappear { operation?.cancel() }
     }
 
-    private func load() {
+    private func select(_ node: MoveNode) -> Void {
+        selected = node
+        query = ""
+        focused = nil
+    }
+
+    private func load() -> Void {
         guard !busy, let base = URL(string: V2EXEndpoint.base), base.scheme == "https" else { return }
         busy = true
         error = nil
@@ -108,7 +148,7 @@ struct TopicMoveSheet: View {
         }
     }
 
-    private func submit() {
+    private func submit() -> Void {
         guard !busy, !blocked, let selected, let preparation, let base = URL(string: V2EXEndpoint.base) else { return }
         busy = true
         error = nil
@@ -116,21 +156,67 @@ struct TopicMoveSheet: View {
         operation = Task {
             defer { busy = false }
             do {
-                let node = try await TopicMoveService(base: base).move(id: topic.id, cookie: cookie,
+                let result = try await TopicMoveService(base: base).move(id: topic.id, cookie: cookie,
                     expectedNode: preparation.topic.node.name, destination: selected, memo: memo,
                     sessionCurrent: { identity == moves.key(session: session) })
                 guard !Task.isCancelled, identity == moves.key(session: session) else { return }
-                cache.updateNode(node, topicID: topic.id)
-                moves.record(node, topicID: topic.id)
+                moves.submitted(result, topicID: topic.id)
+                onSubmitted(result)
                 dismiss()
             } catch {
                 guard !error.isCancellation else { return }
-                self.error = (error as? MoveFailure)?.errorDescription ?? MoveFailure.unconfirmed.errorDescription
+                self.error = (error as? MoveFailure)?.errorDescription ?? MoveFailure.connection.errorDescription
                 moves.invalidate(topic.id)
                 blocked = true
-                // A fresh panel is required after a failed mutation; never offer an automatic retry.
             }
         }
+    }
+}
+
+private struct MoveShortcutsEditor: View {
+    let preparation: MovePreparation
+    @EnvironmentObject private var moves: TopicMoveStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: [MoveNode] = []
+    @State private var query = ""
+    @State private var restoreDefault = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("我的常用节点（可删除、拖动排序）") {
+                    if draft.isEmpty { Text("常用节点为空").foregroundStyle(.secondary) }
+                    ForEach(draft) { node in Text("\(node.title) / \(node.name)") }
+                        .onDelete { draft.remove(atOffsets: $0); restoreDefault = false }
+                        .onMove { draft.move(fromOffsets: $0, toOffset: $1); restoreDefault = false }
+                }
+                Section("添加节点") {
+                    TextField("搜索节点", text: $query)
+                    if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        let results = preparation.nodes.filter { node in node.matches(query) && !draft.contains(where: { $0.name == node.name }) }
+                        if results.isEmpty { Text("没有可添加的匹配节点").foregroundStyle(.secondary) }
+                        ForEach(results) { node in
+                            Button { draft.append(node); restoreDefault = false } label: {
+                                Label("\(node.title) / \(node.name)", systemImage: "plus.circle")
+                            }
+                        }
+                    }
+                }
+                Section {
+                    Button("恢复官网默认") { draft = preparation.form.shortcuts; restoreDefault = true }
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("编辑常用节点")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { moves.saveShortcuts(restoreDefault ? nil : draft); dismiss() }
+                }
+            }
+        }
+        .onAppear { draft = moves.shortcuts(defaults: preparation.form.shortcuts, directory: preparation.nodes) }
     }
 }
 
@@ -216,34 +302,4 @@ struct TopicMoveDiagnosticsView: View {
             busy = false
         }
     }
-}
-
-private struct TopicMoveRowModifier: ViewModifier {
-    let topic: V2Topic
-    @EnvironmentObject private var session: V2EXSessionStore
-    @EnvironmentObject private var moves: TopicMoveStore
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var presented = false
-
-    func body(content: Content) -> some View {
-        VStack(spacing: 0) {
-            content
-            if moves.allowed(topic.id, session: session) {
-                HStack {
-                    Spacer()
-                    Button { presented = true } label: { Label("移动", systemImage: "arrow.right.square") }
-                        .buttonStyle(.borderless).font(.caption)
-                }.padding(.horizontal, 16).padding(.bottom, 10)
-            }
-        }
-        .task(id: "\(moves.key(session: session))|\(scenePhase == .active)") {
-            if scenePhase == .active { await moves.watch(topic.id, session: session) }
-        }
-        .sheet(isPresented: $presented) { TopicMoveSheet(topic: topic) }
-        .onChange(of: moves.key(session: session)) { _, _ in presented = false }
-    }
-}
-
-extension View {
-    func topicMoveAction(for topic: V2Topic) -> some View { modifier(TopicMoveRowModifier(topic: topic)) }
 }

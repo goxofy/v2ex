@@ -28,8 +28,12 @@ final class TopicMoveStore: ObservableObject {
     private var requestTokens: [Int: UUID] = [:]
     private var consumers: [Int: Int] = [:]
     private var activeRequests = 0
-    private var retryAfter: [Int: Date] = [:]
     private var nodeOrigin = ""
+    private struct CachedNode: Codable { let node: MoveNode; let expires: Date }
+    private var nodeExpiry: [Int: Date] = [:]
+    private var optimistic: Set<Int> = []
+    private var expiryTasks: [Int: Task<Void, Never>] = [:]
+    @Published private(set) var customShortcuts: [MoveNode]?
 
     private let defaults: UserDefaults
     private let now: () -> Date
@@ -47,13 +51,67 @@ final class TopicMoveStore: ObservableObject {
 
     private func loadNodes() {
         nodeOrigin = V2EXEndpoint.base
-        let data = defaults.data(forKey: "topicMove.nodes.\(nodeOrigin)")
-        movedNodes = data.flatMap { try? JSONDecoder().decode([Int: MoveNode].self, from: $0) } ?? [:]
+        expiryTasks.values.forEach { $0.cancel() }
+        expiryTasks.removeAll()
+        optimistic.removeAll()
+        let data = defaults.data(forKey: "topicMove.nodes.v2.\(nodeOrigin)")
+        let cached = data.flatMap { try? JSONDecoder().decode([Int: CachedNode].self, from: $0) } ?? [:]
+        let current = now()
+        let valid = Dictionary(uniqueKeysWithValues: cached.filter {
+            $0.key > 0 && $0.value.expires > current && $0.value.expires <= current.addingTimeInterval(300)
+                && TopicMovePage.validSlug($0.value.node.name)
+        }.sorted { $0.value.expires > $1.value.expires }.prefix(200).map { ($0.key, $0.value) })
+        movedNodes = valid.mapValues(\.node)
+        nodeExpiry = valid.mapValues(\.expires)
+        for id in valid.keys { scheduleExpiry(id) }
+        let favorites = defaults.data(forKey: "topicMove.shortcuts.\(nodeOrigin)")
+        customShortcuts = favorites.flatMap { try? JSONDecoder().decode([MoveNode].self, from: $0) }.map(Self.cleanNodes)
     }
 
-    private func saveNodes() {
-        if let data = try? JSONEncoder().encode(movedNodes) {
-            defaults.set(data, forKey: "topicMove.nodes.\(nodeOrigin)")
+    private func saveNodes() -> Void {
+        var values: [Int: CachedNode] = [:]
+        for (id, node) in movedNodes where !optimistic.contains(id) {
+            if let expires = nodeExpiry[id], expires > now() { values[id] = CachedNode(node: node, expires: expires) }
+        }
+        if let data = try? JSONEncoder().encode(values) {
+            defaults.set(data, forKey: "topicMove.nodes.v2.\(nodeOrigin)")
+        }
+    }
+
+    static func cleanNodes(_ nodes: [MoveNode]) -> [MoveNode] {
+        var seen: Set<String> = []
+        return nodes.filter { TopicMovePage.validSlug($0.name) && !$0.title.isEmpty && seen.insert($0.name).inserted }
+    }
+
+    func shortcuts(defaults website: [MoveNode], directory: [MoveNode]) -> [MoveNode] {
+        let current = Dictionary(Self.cleanNodes(directory).map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        return Self.cleanNodes(customShortcuts ?? website).map { current[$0.name] ?? $0 }
+    }
+
+    func saveShortcuts(_ nodes: [MoveNode]?) -> Void {
+        customShortcuts = nodes.map(Self.cleanNodes)
+        let key = "topicMove.shortcuts.\(nodeOrigin)"
+        if let customShortcuts, let data = try? JSONEncoder().encode(customShortcuts) { defaults.set(data, forKey: key) }
+        else { defaults.removeObject(forKey: key) }
+    }
+
+    func expireNodes() -> Void {
+        for id in Array(nodeExpiry.keys) where nodeExpiry[id, default: .distantPast] <= now() {
+            movedNodes.removeValue(forKey: id)
+            nodeExpiry.removeValue(forKey: id)
+            optimistic.remove(id)
+            expiryTasks.removeValue(forKey: id)?.cancel()
+        }
+        saveNodes()
+    }
+
+    private func scheduleExpiry(_ id: Int) -> Void {
+        expiryTasks[id]?.cancel()
+        let seconds = max(0, (nodeExpiry[id] ?? now()).timeIntervalSince(now()))
+        expiryTasks[id] = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(min(seconds, 300) * 1_000_000_000)) }
+            catch { return }
+            self?.expireNodes()
         }
     }
 
@@ -73,25 +131,14 @@ final class TopicMoveStore: ObservableObject {
         requestTokens.removeAll()
         permissions.removeAll()
         diagnostics.removeAll()
-        retryAfter.removeAll()
         if nodeOrigin != V2EXEndpoint.base { loadNodes() }
     }
 
     func watch(_ id: Int, session: V2EXSessionStore) async {
         synchronize(session: session)
         guard session.isLoggedIn, URL(string: V2EXEndpoint.base)?.scheme == "https" else { return }
-        let generation = identity
-        consumers[id, default: 0] += 1
-        defer { releaseConsumer(id) }
-        while !Task.isCancelled, generation == key(session: session) {
-            if permissions[id]?.expires ?? .distantPast <= now() {
-                permissions.removeValue(forKey: id)
-                if requests[id] == nil, retryAfter[id] ?? .distantPast <= now() {
-                    startProbe(id, session: session)
-                }
-            }
-            do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
-        }
+        if allowed(id, session: session) { return }
+        await checkPermission(id, session: session)
     }
 
     func diagnostic(_ id: Int, session: V2EXSessionStore) -> ProbeResult? {
@@ -99,7 +146,7 @@ final class TopicMoveStore: ObservableObject {
         return result
     }
 
-    /// Explicit read-only recheck shares the same queue and result used by list/detail controls.
+    /// Explicit read-only recheck shares the same queue and result used by detail controls.
     func checkPermission(_ id: Int, session: V2EXSessionStore) async {
         synchronize(session: session)
         guard id > 0, session.isLoggedIn, URL(string: V2EXEndpoint.base)?.scheme == "https" else { return }
@@ -107,17 +154,17 @@ final class TopicMoveStore: ObservableObject {
         defer { releaseConsumer(id) }
         if requests[id] == nil {
             permissions.removeValue(forKey: id)
-            retryAfter.removeValue(forKey: id)
             startProbe(id, session: session)
         }
-        await requests[id]?.value
+        while requests[id] != nil, !Task.isCancelled {
+            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+        }
     }
 
     private func releaseConsumer(_ id: Int) {
         consumers[id, default: 1] -= 1
         if consumers[id] == 0 {
             consumers.removeValue(forKey: id)
-            retryAfter.removeValue(forKey: id)
             requests.removeValue(forKey: id)?.cancel()
             requestTokens.removeValue(forKey: id)
             if diagnostics[id]?.state == .queued || diagnostics[id]?.state == .checking {
@@ -168,12 +215,10 @@ final class TopicMoveStore: ObservableObject {
             }
             guard !Task.isCancelled, self.identity == generation, generation == self.key(session: session),
                   self.requestTokens[id] == token, nodeRevision == self.changeRevision else { return }
-            self.retryAfter[id] = self.now().addingTimeInterval(60)
             switch result {
             case .success(let topic):
                 if self.movedNodes[id] != nil, self.movedNodes[id] != topic.node {
-                    self.movedNodes[id] = topic.node
-                    self.saveNodes()
+                    self.storeNode(topic.node, id: id, optimistic: false)
                 }
                 if self.permissions.count >= 200, let oldest = self.permissions.min(by: { $0.value.expires < $1.value.expires })?.key {
                     self.permissions.removeValue(forKey: oldest)
@@ -188,23 +233,15 @@ final class TopicMoveStore: ObservableObject {
         }
     }
 
-    func refreshMovedNode(_ id: Int, session: V2EXSessionStore) async {
+    func refreshMovedNode(_ id: Int, session: V2EXSessionStore) async -> Void {
         synchronize(session: session)
         guard movedNodes[id] != nil, session.isLoggedIn,
               let base = URL(string: V2EXEndpoint.base), base.scheme == "https" else { return }
         let generation = identity
         let before = changeRevision
-        let cookie = session.cookie
-        while activeRequests >= 2 {
-            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        activeRequests += 1
-        defer { activeRequests -= 1 }
-        guard let result = try? await fetchPermission(id, cookie, base),
+        guard let node = try? await TopicMoveService(base: base).currentNode(id: id, cookie: session.cookie),
               !Task.isCancelled, generation == key(session: session), before == changeRevision else { return }
-        movedNodes[id] = result.node
-        saveNodes()
+        storeNode(node, id: id, optimistic: false)
     }
 
     func invalidate(_ id: Int) {
@@ -213,15 +250,30 @@ final class TopicMoveStore: ObservableObject {
         requestTokens.removeValue(forKey: id)
         permissions.removeValue(forKey: id)
         diagnostics.removeValue(forKey: id)
-        retryAfter.removeValue(forKey: id)
     }
 
-    func record(_ node: MoveNode, topicID: Int) {
-        if movedNodes.count >= 200, movedNodes[topicID] == nil, let oldest = movedNodes.keys.min() {
-            movedNodes.removeValue(forKey: oldest)
-        }
-        movedNodes[topicID] = node
-        saveNodes()
+    func record(_ node: MoveNode, topicID: Int) -> Void {
+        storeNode(node, id: topicID, optimistic: false)
         invalidate(topicID)
+    }
+
+    func submitted(_ result: MoveSubmission, topicID: Int) -> Void {
+        switch result {
+        case .submitted(let node): storeNode(node, id: topicID, optimistic: true)
+        case .unchanged(let node): storeNode(node, id: topicID, optimistic: false)
+        }
+        invalidate(topicID)
+    }
+
+    private func storeNode(_ node: MoveNode, id: Int, optimistic pending: Bool) -> Void {
+        if movedNodes.count >= 200, movedNodes[id] == nil, let oldest = nodeExpiry.min(by: { $0.value < $1.value })?.key {
+            nodeExpiry[oldest] = .distantPast
+            expireNodes()
+        }
+        movedNodes[id] = node
+        nodeExpiry[id] = now().addingTimeInterval(300)
+        if pending { optimistic.insert(id) } else { optimistic.remove(id) }
+        saveNodes()
+        scheduleExpiry(id)
     }
 }

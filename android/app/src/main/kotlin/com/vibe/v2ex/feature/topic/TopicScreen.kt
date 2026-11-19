@@ -130,13 +130,15 @@ fun TopicScreen(
     val uiState = loadedState.copy(topic = loadedState.topic?.let { movedTopic(it) }, preview = loadedState.preview?.let { movedTopic(it) })
     val moves = topicMoves()
     val moveRevision by moves.revision.collectAsState()
-    val movePermissions by moves.permissions.collectAsState()
     var showMove by remember(topicId, moveRevision) { mutableStateOf(false) }
-    WatchTopicMovePermission(topicId, moves)
-    if (showMove) uiState.topic?.let { topic ->
-        TopicMoveSheet(topic, moves, moveRevision) { showMove = false }
-    }
+    val canMove = rememberTopicMovePermission(topicId, moves)
     val snackbarHostState = remember { SnackbarHostState() }
+    var moveResult by remember(topicId, moveRevision) { mutableStateOf<com.vibe.v2ex.data.remote.MoveSubmission?>(null) }
+    if (showMove) uiState.topic?.let { topic ->
+        TopicMoveSheet(topic, moves, moveRevision, onSubmitted = { moveResult = it }) { showMove = false }
+    }
+    LaunchedEffect(moveResult) { moveResult?.let { snackbarHostState.showSnackbar(it.message) } }
+    LaunchedEffect(moveResult, moveRevision) { if (moveResult != null) moves.refreshMovedNode(topicId) }
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val composerFocus = remember { FocusRequester() }
@@ -284,7 +286,7 @@ fun TopicScreen(
                 favoriteSyncing = uiState.favoriteSyncing,
                 isOfflineSaved = uiState.isOfflineSaved,
                 onBack = onBack,
-                onMove = if (movePermissions.containsKey(topicId) && moves.allowed(topicId)) ({ showMove = true }) else null,
+                onMove = if (canMove) ({ showMove = true }) else null,
                 onNodeClick = { uiState.topic?.node?.name?.let(onNodeClick) },
                 onToggleFavorite = viewModel::toggleFavorite,
                 onToggleOffline = viewModel::toggleOffline,

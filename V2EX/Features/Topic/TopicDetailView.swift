@@ -13,6 +13,9 @@ struct TopicDetailView: View {
     @EnvironmentObject private var session: V2EXSessionStore
     @EnvironmentObject private var moves: TopicMoveStore
     @State private var showMove = false
+    @State private var moveMessage: String?
+    @State private var moveReceipt = 0
+    @State private var movePermissionIdentity: String?
     @EnvironmentObject private var replyDrafts: ReplyDraftStore
     @EnvironmentObject private var history: HistoryStore
     @EnvironmentObject private var moderation: ModerationStore
@@ -80,10 +83,38 @@ struct TopicDetailView: View {
             if let topic = model.topic { history.record(topic) }
         }
         .task(id: "\(moves.key(session: session))|\(scenePhase)") {
-            if scenePhase == .active { await moves.watch(topicID, session: session) }
+            guard scenePhase == .active else { return }
+            let identity = moves.key(session: session)
+            movePermissionIdentity = nil
+            await moves.watch(topicID, session: session)
+            guard !Task.isCancelled, identity == moves.key(session: session) else { return }
+            if moves.allowed(topicID, session: session) { movePermissionIdentity = identity }
         }
-        .sheet(isPresented: $showMove) { if let topic = model.topic { TopicMoveSheet(topic: topic) } }
-        .onChange(of: moves.key(session: session)) { _, _ in showMove = false }
+        .sheet(isPresented: $showMove) {
+            if let topic = model.topic {
+                TopicMoveSheet(topic: topic) { result in
+                    moveMessage = result.message
+                    moveReceipt += 1
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if let moveMessage {
+                Text(moveMessage).font(.subheadline).padding()
+                    .background(.regularMaterial, in: Capsule()).padding(.top, 12)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
+        .task(id: moveReceipt) {
+            guard moveReceipt > 0 else { return }
+            await moves.refreshMovedNode(topicID, session: session)
+        }
+        .task(id: moveMessage) {
+            guard moveMessage != nil else { return }
+            do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
+            moveMessage = nil
+        }
+        .onChange(of: moves.key(session: session)) { _, _ in showMove = false; moveMessage = nil }
         .sheet(isPresented: $showShareCard) {
             if let topic = model.topic {
                 TopicShareCardSheet(
@@ -418,7 +449,7 @@ struct TopicDetailView: View {
                 }
                 .disabled(isSyncingFavorite)
                 Menu {
-                    if moves.allowed(topicID, session: session), model.topic != nil {
+                    if session.isLoggedIn, movePermissionIdentity == moves.key(session: session), model.topic != nil {
                         Button { showMove = true } label: { Label("移动主题", systemImage: "arrow.right.square") }
                     }
                     Button {
