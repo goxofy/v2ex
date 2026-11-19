@@ -134,6 +134,90 @@ struct TopicMoveSheet: View {
     }
 }
 
+struct TopicMoveDiagnosticsView: View {
+    @EnvironmentObject private var session: V2EXSessionStore
+    @EnvironmentObject private var moves: TopicMoveStore
+    @State private var input = ""
+    @State private var checkedID: Int?
+    @State private var busy = false
+    @State private var operation: Task<Void, Never>?
+
+    private var topicID: Int? {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+              let id = Int(value), id > 0 else { return nil }
+        return id
+    }
+
+    var body: some View {
+        Form {
+            Section("当前连接") {
+                LabeledContent("站点", value: V2EXEndpoint.base)
+                LabeledContent("App 网页会话", value: session.isLoggedIn ? "已保存（有效性由请求核实）" : "未登录")
+                Text("Access Token 和浏览器中的登录状态不能代替 App 内的网页登录。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("只读权限检查") {
+                TextField("话题 ID，例如 123", text: $input).keyboardType(.numberPad)
+                    .disabled(busy)
+                Button("检查此话题权限") { check() }
+                    .disabled(busy || topicID == nil || !session.isLoggedIn)
+                if busy { ProgressView("正在检查网页权限…") }
+                Text("只读取话题页及必要的移动表单，不提交任何移动。请使用你在官网有权管理的话题 ID。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if let checkedID {
+                Section("话题 #\(checkedID) 的检查结果") {
+                    if let result = moves.diagnostic(checkedID, session: session) {
+                        resultContent(result, id: checkedID)
+                        Text(result.checkedAt, style: .time).font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text(busy ? "等待检查结果" : "结果已清除或检查取消，请重新检查。")
+                    }
+                }
+            }
+            Section {
+                Text("诊断只显示固定原因码，不显示或上传 Cookie、网页内容、用户名及隐藏验证字段。检查成功后返回话题页，在右上角 ⋯ 菜单查看「移动主题」。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("网页权限诊断")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: moves.key(session: session)) { _, _ in
+            operation?.cancel()
+            busy = false
+            checkedID = nil
+        }
+        .onDisappear { operation?.cancel() }
+    }
+
+    @ViewBuilder
+    private func resultContent(_ result: TopicMoveStore.ProbeResult, id: Int) -> some View {
+        switch result.state {
+        case .queued: Text("正在等待检查名额（最多两个并发）")
+        case .checking: Text("正在读取话题页及必要的移动表单")
+        case .allowed:
+            Text(moves.allowed(id, session: session) ? "已确认移动权限" : "此前检查通过，权限缓存已过期，请重新检查。")
+        case .denied: Text("此话题的权限检查未获允许。")
+        case .failed(let issue):
+            LabeledContent("检查阶段", value: issue.stage.rawValue)
+            LabeledContent("原因码", value: issue.code)
+            Text(issue.message)
+        }
+    }
+
+    private func check() {
+        guard !busy, let topicID else { return }
+        checkedID = topicID
+        busy = true
+        operation = Task {
+            await moves.checkPermission(topicID, session: session)
+            guard !Task.isCancelled else { return }
+            busy = false
+        }
+    }
+}
+
 private struct TopicMoveRowModifier: ViewModifier {
     let topic: V2Topic
     @EnvironmentObject private var session: V2EXSessionStore

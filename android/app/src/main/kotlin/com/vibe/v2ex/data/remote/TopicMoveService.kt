@@ -40,7 +40,12 @@ internal class TopicMoveService(
 
     suspend fun permission(id: Long, cookie: String): MoveTopic = safe {
         validate(id, cookie)
-        TopicMovePage(get("/t/$id", cookie).body, base).topic(id)
+        val topic = TopicMovePage(get("/t/$id", cookie).body, base).topic(id)
+        if (!topic.canMove) {
+            // Mobile pages can omit MOVE; a valid same-origin form is independent permission evidence.
+            TopicMovePage(get("/move/topic/$id", cookie).body, base).form(id)
+        }
+        topic.copy(canMove = true)
     }
 
     suspend fun prepare(id: Long, cookie: String): MovePreparation = safe {

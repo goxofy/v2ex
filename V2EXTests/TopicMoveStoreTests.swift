@@ -141,6 +141,85 @@ final class TopicMoveStoreTests: XCTestCase {
         pending.forEach { $0.resume(throwing: CancellationError()) }
     }
 
+    func testDiagnosticExposesSafeStageAndReason() async {
+        let issue = MovePermissionIssue(stage: .form, reason: .http(403))
+        let account = session()
+        let store = TopicMoveStore(defaults: isolatedDefaults(), fetchPermission: { _, _, _ in throw issue })
+        await store.checkPermission(123, session: account)
+        XCTAssertEqual(store.diagnostic(123, session: account)?.state, .failed(issue))
+        XCTAssertEqual(issue.code, "FORM_HTTP_403")
+        XCTAssertFalse(store.allowed(123, session: account))
+        XCTAssertTrue(store.permissions.isEmpty)
+    }
+
+    func testManualRecheckRecoversAndUpdatesSharedPermission() async {
+        var count = 0
+        let account = session()
+        let store = TopicMoveStore(defaults: isolatedDefaults(), fetchPermission: { _, _, _ in
+            count += 1
+            if count == 1 { throw MovePermissionIssue(stage: .topic, reason: .network) }
+            return MoveTopic(node: MoveNode(name: "qna", title: "问与答"), canMove: true)
+        })
+        await store.checkPermission(123, session: account)
+        XCTAssertFalse(store.allowed(123, session: account))
+        await store.checkPermission(123, session: account)
+        XCTAssertEqual(count, 2)
+        XCTAssertTrue(store.allowed(123, session: account))
+        XCTAssertEqual(store.diagnostic(123, session: account)?.state, .allowed)
+    }
+
+    func testManualCheckSharesExistingWatch() async {
+        var pending: CheckedContinuation<MoveTopic, Error>?
+        var count = 0
+        let account = session()
+        let store = TopicMoveStore(defaults: isolatedDefaults(), fetchPermission: { _, _, _ in
+            count += 1
+            return try await withCheckedThrowingContinuation { pending = $0 }
+        })
+        let watch = Task { await store.watch(123, session: account) }
+        defer { watch.cancel() }
+        await settle { pending != nil }
+        let manual = Task { await store.checkPermission(123, session: account) }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(store.diagnostic(123, session: account)?.state, .checking)
+        pending?.resume(returning: MoveTopic(node: MoveNode(name: "qna", title: "问与答"), canMove: true))
+        await manual.value
+        XCTAssertEqual(count, 1)
+        XCTAssertTrue(store.allowed(123, session: account))
+    }
+
+    func testSessionChangeClearsDiagnosticsAndOldFailure() async {
+        var pending: CheckedContinuation<MoveTopic, Error>?
+        let account = session()
+        let store = TopicMoveStore(defaults: isolatedDefaults(), fetchPermission: { _, _, _ in
+            try await withCheckedThrowingContinuation { pending = $0 }
+        })
+        let manual = Task { await store.checkPermission(123, session: account) }
+        await settle { pending != nil }
+        account.clear()
+        store.synchronize(session: account)
+        pending?.resume(throwing: MovePermissionIssue(stage: .form, reason: .http(403)))
+        await manual.value
+        XCTAssertNil(store.diagnostic(123, session: account))
+        XCTAssertTrue(store.diagnostics.isEmpty)
+        XCTAssertFalse(store.allowed(123, session: account))
+    }
+
+    func testInvalidManualInputAndLoggedOutSessionNeverProbe() async {
+        var count = 0
+        let account = session()
+        let store = TopicMoveStore(defaults: isolatedDefaults(), fetchPermission: { _, _, _ in
+            count += 1
+            throw MoveFailure.unavailable
+        })
+        await store.checkPermission(0, session: account)
+        await store.checkPermission(-1, session: account)
+        account.clear()
+        await store.checkPermission(123, session: account)
+        XCTAssertEqual(count, 0)
+        XCTAssertTrue(store.diagnostics.isEmpty)
+    }
+
     func testOnlyConfirmedNodeMetadataPersists() {
         let defaults = isolatedDefaults()
         let store = TopicMoveStore(defaults: defaults)
