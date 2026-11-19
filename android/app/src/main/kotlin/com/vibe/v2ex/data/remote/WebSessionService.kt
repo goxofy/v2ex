@@ -211,6 +211,7 @@ class WebSessionService @Inject constructor(
             content = content,
             cookie = secureStore.sessionCookieHeader,
             username = secureStore.sessionUsername,
+            userAgent = secureStore.sessionUserAgent,
         )
 
     suspend fun setFavoriteTopic(topicId: Long, favorited: Boolean): Result<Unit> = withContext(Dispatchers.IO) {

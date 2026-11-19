@@ -10,22 +10,34 @@ internal class ReplyPage(html: String, private val url: HttpUrl, private val top
     data class Form(val url: HttpUrl, val once: String)
 
     private val document = Jsoup.parse(html, url.toString()).apply {
-        select("script, style, textarea, template, noscript, .topic_content, .subtle").forEach { element ->
+        select("script, style, textarea, template, noscript, .topic_content, .topic_append, .subtle").forEach { element ->
             // Keep the empty textarea as a form marker, never its echoed draft.
             if (element.tagName() == "textarea") element.empty() else element.remove()
         }
     }
-    private val rows: List<Element> = document.select("#Main div.cell[id^=r_]").filter { row ->
+    private val rows: List<Element> = mainContent(document)?.select("div.cell[id^=r_]").orEmpty().filter { row ->
         row.parents().none { it.hasClass("reply_content") || it.tagName() == "form" || it.id().startsWith("r_") }
     }
     private val controls = document.clone().apply {
         select(".reply_content, div.cell[id^=r_], .topic_content, .subtle").remove()
     }
+    private val controlMain: Element? = mainContent(controls)
+
+    /** Match the site's desktop/mobile content roots, never an arbitrary sidebar or user subtree. */
+    private fun mainContent(source: Element): Element? {
+        fun trusted(element: Element): Boolean = element.parents().none {
+            it.hasClass("reply_content") || it.tagName() == "form" || it.id().startsWith("r_")
+        }
+        val mains = source.select("#Main").filter(::trusted)
+        if (mains.isNotEmpty()) return mains.singleOrNull()
+        val wrapper = source.select("div#Wrapper").filter(::trusted).singleOrNull() ?: return null
+        return wrapper.children().filter { it.tagName() == "div" && it.hasClass("content") }.singleOrNull()
+    }
 
     val maximumReplyId: Long = rows.mapNotNull(::replyId).maxOrNull() ?: 0
 
     fun form(): Form? {
-        val candidates = controls.select("#Main form").filter {
+        val candidates = controlMain?.select("form").orEmpty().filter {
             it.attr("method").equals("post", ignoreCase = true) &&
                 it.select("textarea[name=content]").size == 1
         }
@@ -39,9 +51,9 @@ internal class ReplyPage(html: String, private val url: HttpUrl, private val top
     }
 
     fun lastPage(): Int {
-        val inputPages = controls.select("#Main input.page_input[max]")
+        val inputPages = controlMain?.select("input.page_input[max]").orEmpty()
             .mapNotNull { it.attr("max").toIntOrNull() }
-        val linkPages = controls.select("#Main a[href]").mapNotNull { link ->
+        val linkPages = controlMain?.select("a[href]").orEmpty().mapNotNull { link ->
             val target = url.resolve(link.attr("href")) ?: return@mapNotNull null
             if (!target.isReplyTopic(topicUrl)) return@mapNotNull null
             target.queryParameter("p")?.toIntOrNull()
@@ -49,8 +61,11 @@ internal class ReplyPage(html: String, private val url: HttpUrl, private val top
         return (inputPages + linkPages).filter { it in 1..100_000 }.maxOrNull() ?: 1
     }
 
-    fun rejection(): String? {
-        if (controls.select("form[action*=signin], input[name=password], input[name=two_factor_code]").isNotEmpty()) {
+    fun rejection(mitigated: Boolean = false): String? {
+        if (mitigated || controls.title().contains("just a moment", true) ||
+            controls.title().contains("attention required", true) || controls.select("#challenge-form").isNotEmpty()
+        ) return "V2EX 要求网页验证，请先到网页查看并完成验证，避免重复发送；草稿已保留"
+        if (controls.select("form[action*=signin], form[action*=/2fa], input[name=password], input[name=two_factor_code]").isNotEmpty()) {
             return "网页会话已失效，请重新登录 V2EX"
         }
         if (controls.select(
