@@ -91,7 +91,7 @@ internal class TopicMoveService(
                 if (target != null && target.sameOrigin(base) && target.encodedPath in listOf("/signin", "/2fa")) {
                     throw MoveFailure(MoveFailure.Kind.SESSION)
                 }
-                if (response.code !in listOf(301, 302, 303, 307, 308) || target == null || !allowed(target, "/t/$id")) {
+                if (response.code !in listOf(301, 302, 303, 307, 308) || target == null || !allowed(target, "/t/$id", allowFragment = true)) {
                     throw MoveFailure(MoveFailure.Kind.RESPONSE)
                 }
             } else {
@@ -139,8 +139,8 @@ internal class TopicMoveService(
         throw MoveFailure(MoveFailure.Kind.UNAVAILABLE)
     }
 
-    private fun allowed(url: HttpUrl, path: String): Boolean = url.sameOrigin(base) && url.encodedPath == path &&
-        url.username.isEmpty() && url.password.isEmpty() && url.fragment == null &&
+    private fun allowed(url: HttpUrl, path: String, allowFragment: Boolean = false): Boolean = url.sameOrigin(base) && url.encodedPath == path &&
+        url.username.isEmpty() && url.password.isEmpty() && (allowFragment || url.fragment == null) &&
         (url.query == null || path.startsWith("/api/"))
 
     private fun request(url: HttpUrl, cookie: String): Request.Builder = Request.Builder().url(url)

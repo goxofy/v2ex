@@ -218,6 +218,25 @@ class TopicMoveServiceTest {
         assertEquals("safe-token", fields["once"])
         assertEquals("sandbox", fields["destination"])
     }
+    @Test fun postReplyAnchorReturnsSubmission(): Unit = runBlocking {
+        enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123#reply27")
+        assertTrue(move() is MoveSubmission.Submitted)
+        assertEquals(3, server.requestCount)
+    }
+    @Test fun absolutePostReplyAnchorReturnsSubmission(): Unit = runBlocking {
+        enqueue(topic()); enqueue(form); enqueue("", 302, server.url("/t/123#reply27").toString())
+        assertTrue(move() is MoveSubmission.Submitted)
+        assertEquals(3, server.requestCount)
+    }
+    @Test fun postAnchorCannotBypassSameTopicCheck(): Unit = failure(MoveFailure.Kind.RESPONSE) {
+        enqueue(topic()); enqueue(form); enqueue("", 302, "/t/456#reply27"); move()
+    }
+    @Test fun postAnchorCannotBypassSameOriginCheck(): Unit = failure(MoveFailure.Kind.RESPONSE) {
+        enqueue(topic()); enqueue(form); enqueue("", 302, "https://example.invalid/t/123#reply27"); move()
+    }
+    @Test fun postAnchorCannotBypassQueryCheck(): Unit = failure(MoveFailure.Kind.RESPONSE) {
+        enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123?next=other#reply27"); move()
+    }
     @Test fun submittedMoveDoesNotWaitForNodeChange(): Unit = runBlocking {
         enqueue(topic()); enqueue(form); enqueue("", 302, "/t/123")
         enqueue(topic()); enqueue(topic()); enqueue(topic("sandbox"))

@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A225FB651D588B3AFE128702 /* FollowingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6631D99D03F6233E817576A /* FollowingTests.swift */; };
+		E7379462F3AD1FC530E56CAB /* HomeTabsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 541E3C03A297629DF8673134 /* HomeTabsTests.swift */; };
+		F96E3B5A20282905CC82E98B /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4748951529AF4F6030530E /* HomeViewModel.swift */; };
+		F0363AE4E0EBF3FAF9F1101C /* HomeTabsEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6542731A95BADA2C2164C46 /* HomeTabsEditor.swift */; };
+		5AF551BA9B325C18DE0138FD /* FollowingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB791B89FC5F9B26DF2A1D5C /* FollowingService.swift */; };
+		655725183A6299105A8DA4BA /* HomeTabsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1362B263E5069064484D4C1F /* HomeTabsStore.swift */; };
 		A203918D4F124BCC87CE1111 /* TopicMoveStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A203918D4F124BCC87CE1112 /* TopicMoveStoreTests.swift */; };
 		938AE47EC9B7F5DA0CA4BED0 /* TopicMoveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0460F4065309852BFA70DFF5 /* TopicMoveTests.swift */; };
 		06BA58754CEC8C37C4D367D3 /* TopicMoveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F5DD947722399870ED54D6A /* TopicMoveSheet.swift */; };
@@ -85,6 +91,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C6631D99D03F6233E817576A /* FollowingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowingTests.swift; sourceTree = "<group>"; };
+		541E3C03A297629DF8673134 /* HomeTabsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTabsTests.swift; sourceTree = "<group>"; };
+		2F4748951529AF4F6030530E /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
+		E6542731A95BADA2C2164C46 /* HomeTabsEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTabsEditor.swift; sourceTree = "<group>"; };
+		DB791B89FC5F9B26DF2A1D5C /* FollowingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowingService.swift; sourceTree = "<group>"; };
+		1362B263E5069064484D4C1F /* HomeTabsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTabsStore.swift; sourceTree = "<group>"; };
 		A203918D4F124BCC87CE1112 /* TopicMoveStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopicMoveStoreTests.swift; sourceTree = "<group>"; };
 		0460F4065309852BFA70DFF5 /* TopicMoveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopicMoveTests.swift; sourceTree = "<group>"; };
 		7F5DD947722399870ED54D6A /* TopicMoveSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopicMoveSheet.swift; sourceTree = "<group>"; };
@@ -163,6 +175,7 @@
 				B81F6BD7C210C928142B5902 /* HTMLContent.swift */,
 				A203918D4F124BCC87CE1102 /* ReplySubmission.swift */,
 				1DB169C5CB8ADBE27CA58696 /* TopicMoveService.swift */,
+				DB791B89FC5F9B26DF2A1D5C /* FollowingService.swift */,
 				D9FFF528C66D3B6C1117E122 /* TopicMovePage.swift */,
 				1BCBFD2B30842891D7861534 /* V2EXClient.swift */,
 			);
@@ -190,6 +203,8 @@
 			isa = PBXGroup;
 			children = (
 				6D3D18A35A705E7C96685502 /* HomeView.swift */,
+				2F4748951529AF4F6030530E /* HomeViewModel.swift */,
+				E6542731A95BADA2C2164C46 /* HomeTabsEditor.swift */,
 			);
 			path = Home;
 			sourceTree = "<group>";
@@ -311,7 +326,9 @@
 				277100A13A4163C35603227F /* NodeFollowingTests.swift */,
 				A203918D4F124BCC87CE1104 /* ReplySubmissionTests.swift */,
 				0460F4065309852BFA70DFF5 /* TopicMoveTests.swift */,
+				C6631D99D03F6233E817576A /* FollowingTests.swift */,
 				A203918D4F124BCC87CE1112 /* TopicMoveStoreTests.swift */,
+				541E3C03A297629DF8673134 /* HomeTabsTests.swift */,
 			);
 			path = V2EXTests;
 			sourceTree = "<group>";
@@ -362,6 +379,7 @@
 				47C86804E76925BACA4F4F28 /* Stores.swift */,
 				C62736A419F41C9077510ABD /* V2EXSessionStore.swift */,
 				9E63124F6A0729A7C669BBAA /* TopicMoveStore.swift */,
+				1362B263E5069064484D4C1F /* HomeTabsStore.swift */,
 			);
 			path = Storage;
 			sourceTree = "<group>";
@@ -497,9 +515,12 @@
 				1F78C3DC3E570CB4FB4DEB28 /* HTMLContent.swift in Sources */,
 				A203918D4F124BCC87CE1101 /* ReplySubmission.swift in Sources */,
 				7F26E1187DE62ADD717395AB /* TopicMoveService.swift in Sources */,
+				5AF551BA9B325C18DE0138FD /* FollowingService.swift in Sources */,
 				A7CD0D6AEDAD64E1193D063F /* TopicMovePage.swift in Sources */,
 				C18EAE8CEFEE38E38CC3B246 /* HackerNewsView.swift in Sources */,
 				AA82A2ABA2280EE18F23C7C9 /* HomeView.swift in Sources */,
+				F96E3B5A20282905CC82E98B /* HomeViewModel.swift in Sources */,
+				F0363AE4E0EBF3FAF9F1101C /* HomeTabsEditor.swift in Sources */,
 				D57646694597782B32E7FD2A /* LaunchAnimationView.swift in Sources */,
 				CC19FE500CF1C1A1BAA2F23D /* Models.swift in Sources */,
 				0D8EADE531DACCC9A8FF6E36 /* ModerationSettingsView.swift in Sources */,
@@ -532,6 +553,7 @@
 				6E4B75BF704A638F78BD463F /* V2EXLoginView.swift in Sources */,
 				5447B22BCE55A820900A5A96 /* V2EXSessionStore.swift in Sources */,
 				F991CEA5C9E8EAE79B17F95A /* TopicMoveStore.swift in Sources */,
+				655725183A6299105A8DA4BA /* HomeTabsStore.swift in Sources */,
 				B853F2282EDDB3C31B184BE6 /* WebLoginView.swift in Sources */,
 				DFB8FC333605447066D1C8E8 /* iOS26Compat.swift in Sources */,
 			);
@@ -546,7 +568,9 @@
 				F44719FC901CC893180C53B3 /* NodeFollowingTests.swift in Sources */,
 				A203918D4F124BCC87CE1103 /* ReplySubmissionTests.swift in Sources */,
 				938AE47EC9B7F5DA0CA4BED0 /* TopicMoveTests.swift in Sources */,
+				A225FB651D588B3AFE128702 /* FollowingTests.swift in Sources */,
 				A203918D4F124BCC87CE1111 /* TopicMoveStoreTests.swift in Sources */,
+				E7379462F3AD1FC530E56CAB /* HomeTabsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

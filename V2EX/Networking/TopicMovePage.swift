@@ -206,7 +206,8 @@ struct TopicMovePage {
     }
 }
 
-private final class MoveElement {
+/// Shared restricted HTML tree for site-owned controls and authenticated feed rows.
+final class MoveElement {
     let tag: String
     let attributes: [String: String]
     var children: [MoveElement] = []
