@@ -67,6 +67,11 @@ class SecureStore @Inject constructor(
             bumpAccountCredentials()
         }
 
+    /** Actual WebView UA used when this session was confirmed; never an iOS impersonation. */
+    var sessionUserAgent: String?
+        get() = prefs.getString(KEY_SESSION_USER_AGENT, null)
+        set(value) { prefs.edit().putString(KEY_SESSION_USER_AGENT, value).apply() }
+
     var sessionUsername: String?
         get() = prefs.getString(KEY_SESSION_USERNAME, null)
         set(value) {
@@ -99,6 +104,7 @@ class SecureStore @Inject constructor(
         prefs.edit()
             .remove(KEY_COOKIES)
             .remove(KEY_SESSION_USERNAME)
+            .remove(KEY_SESSION_USER_AGENT)
             .remove(KEY_WEB_LOGGED_IN)
             .apply()
         if (changed) bumpAccountCredentials()
@@ -118,6 +124,7 @@ class SecureStore @Inject constructor(
         const val KEY_PAT = "personal_access_token"
         const val KEY_COOKIES = "session_cookie_header"
         const val KEY_SESSION_USERNAME = "session_username"
+        const val KEY_SESSION_USER_AGENT = "session_user_agent"
         const val KEY_WEB_LOGGED_IN = "web_logged_in"
         const val KEY_DEEPSEEK_API_KEY = "deepseek_api_key"
     }

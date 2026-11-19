@@ -86,30 +86,18 @@ class WebSessionService @Inject constructor(
             ?: doc.select("a[href*=once=]").firstOrNull()?.attr("href")
                 ?.substringAfter("once=")?.substringBefore("&")
 
-    /**
-     * 用指定 cookie 试一次 `/settings`，不写入任何本地状态。null = 网络没给出结论。
-     *
-     * 网页登录不能只看页面长相：两步验证没走完时，页面顶部同样渲染登录态导航、
-     * 也刮得到用户名，但那个 cookie 发不了帖也同步不了收藏。会话是否真的可用，
-     * 一律以能否停在 `/settings` 为准。
-     */
-    suspend fun verifyCookie(cookieHeader: String): Boolean? = withContext(Dispatchers.IO) {
-        // CookieJar 会用自己存的 cookie 覆盖掉手写的 Cookie 头，这一次请求单独关掉它。
-        val client = okHttpClient.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-        val request = Request.Builder().url("$BASE/settings").header("Cookie", cookieHeader).build()
-        runCatching {
-            client.newCall(request).execute().use { response ->
-                response.isSuccessful && response.request.url.encodedPath == "/settings"
-            }
-        }.getOrNull()
-    }
+    private val loginVerifier: WebLoginVerifier by lazy { WebLoginVerifier(okHttpClient) }
 
-    /** Valid iff HTTP 200 and the resolved response URL's path is exactly `/settings`. */
-    suspend fun verifySession(): Boolean = withContext(Dispatchers.IO) {
-        val request = Request.Builder().url("$BASE/settings").build()
-        okHttpClient.newCall(request).execute().use { response ->
-            response.isSuccessful && response.request.url.encodedPath == "/settings"
-        }
+    /** Does not persist anything; challenge pages are inconclusive, not signed out. */
+    suspend fun verifyCookie(candidate: WebLoginCandidate): WebSessionVerification = loginVerifier.verify(candidate)
+
+    suspend fun verifySession(): WebSessionVerification {
+        if (!secureStore.isWebSessionActive) return WebSessionVerification.SIGNED_OUT
+        // Older installs have no captured UA. Keep their previous OkHttp identity until a new login.
+        return loginVerifier.verify(WebLoginCandidate(
+            secureStore.sessionCookieHeader.orEmpty(), secureStore.sessionUsername.orEmpty(),
+            secureStore.sessionUserAgent ?: "okhttp/${okhttp3.OkHttp.VERSION}",
+        ))
     }
 
     /** Public website feed pagination: `/recent?p=N` or `/go/{node}?p=N`. */
@@ -566,11 +554,12 @@ class WebSessionService @Inject constructor(
         }
 
     /** Called after a successful WebView login — see WebLoginScreen. */
-    fun saveWebSession(cookieHeader: String, username: String) {
+    fun saveWebSession(candidate: WebLoginCandidate): Unit {
         // 新登录整体替换会话，不与旧 cookie 合并 —— 混入过期条目会让后续网页请求被拒。
         cookieJar.clear()
-        cookieJar.setCookieHeader(cookieHeader)
-        secureStore.sessionUsername = username
+        cookieJar.setCookieHeader(candidate.cookie)
+        secureStore.sessionUsername = candidate.username
+        secureStore.sessionUserAgent = candidate.userAgent
         secureStore.webLoggedIn = true
     }
 
