@@ -38,6 +38,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,100 +84,113 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val pagerState = rememberPagerState(
-        initialPage = uiState.currentIndex,
-        pageCount = { uiState.feeds.size },
-    )
-    val railState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
+    var editingTabs by remember { mutableStateOf(false) }
+    if (editingTabs) HomeTabsEditor(uiState.feeds, viewModel) { editingTabs = false }
+    val feedStates = rememberSaveableStateHolder()
+    key(uiState.feeds.map { it.key }) {
+        val pagerState = rememberPagerState(
+            initialPage = uiState.currentIndex,
+            pageCount = { uiState.feeds.size },
+        )
+        val railState = rememberLazyListState()
+        val scope = rememberCoroutineScope()
 
-    LaunchedEffect(pagerState.currentPage) {
-        viewModel.selectFeed(pagerState.currentPage)
-        val target = pagerState.currentPage.coerceIn(0, (uiState.feeds.lastIndex).coerceAtLeast(0))
-        railState.animateScrollToItem(target)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding(),
-    ) {
-        // 大标题 + 玻璃搜索圆钮 + accent 发布圆钮（设计稿 01 顶栏）
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "V2EX",
-                style = MaterialTheme.typography.headlineLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f),
-            )
-            GlassCircleButton(onClick = onSearchClick) {
-                Icon(
-                    Icons.Filled.Search,
-                    contentDescription = "搜索",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(19.dp),
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            GlassCircleButton(onClick = onComposeClick, accent = true) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = "写新话题",
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+        LaunchedEffect(pagerState.currentPage) {
+            viewModel.selectFeed(pagerState.currentPage)
+            val target = pagerState.currentPage.coerceIn(0, (uiState.feeds.lastIndex).coerceAtLeast(0))
+            railState.animateScrollToItem(target)
         }
 
-        FeedChipRail(
-            feeds = uiState.feeds,
-            selectedIndex = pagerState.currentPage,
-            railState = railState,
-            onSelect = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .statusBarsPadding(),
+        ) {
+            // 大标题 + 玻璃搜索圆钮 + accent 发布圆钮（设计稿 01 顶栏）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "V2EX",
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f),
+                )
+                GlassCircleButton(onClick = onSearchClick) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = "搜索",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                GlassCircleButton(onClick = onComposeClick, accent = true) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "写新话题",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
 
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize(),
-            key = { page -> uiState.feeds.getOrNull(page)?.key ?: "page-$page" },
-        ) { page ->
-            val feed = uiState.feeds.getOrNull(page) ?: return@HorizontalPager
-            FeedPage(
-                topics = uiState.topicsByFeed[feed.key],
-                isLoading = feed.key in uiState.loadingFeeds,
-                isLoadingMore = feed.key in uiState.loadingMoreFeeds,
-                error = uiState.errorsByFeed[feed.key],
-                loadMoreError = uiState.loadMoreErrorsByFeed[feed.key],
-                hasMore = uiState.hasMoreByFeed[feed.key] == true,
-                paginationToken = uiState.paginationTokensByFeed[feed.key] ?: 0L,
-                isActive = pagerState.currentPage == page,
-                cachedAt = uiState.cachedAtByFeed[feed.key],
-                featuredBadge = when (feed) {
-                    HomeFeed.Hot -> "今日最热"
-                    HomeFeed.R2 -> "R2 排序"
-                    else -> "最新活跃"
-                },
-                readIds = if (uiState.dimReadTopics) uiState.readIds else emptySet(),
-                offlineIds = uiState.offlineIds,
-                showCommunityPulse = feed == HomeFeed.All && uiState.communityPulseEnabled,
-                onRefresh = {
-                    if (pagerState.currentPage == page) viewModel.refresh(feed)
-                },
-                onLoadMore = { viewModel.loadMore(feed) },
-                endMessage = if (feed == HomeFeed.Hot || feed == HomeFeed.R2) {
-                    "已展示全部榜单话题"
-                } else {
-                    "没有更多话题了"
-                },
-                onTopicClick = onTopicClick,
-                onNodeClick = onNodeClick,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    FeedChipRail(
+                        feeds = uiState.feeds,
+                        selectedIndex = pagerState.currentPage,
+                        railState = railState,
+                        onSelect = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
+                    )
+                }
+                TextButton(onClick = { editingTabs = true }) { Text("编辑") }
+            }
+
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                key = { page -> uiState.feeds.getOrNull(page)?.key ?: "page-$page" },
+            ) { page ->
+                val feed = uiState.feeds.getOrNull(page) ?: return@HorizontalPager
+                feedStates.SaveableStateProvider(feed.key) {
+                    FeedPage(
+                        topics = uiState.topicsByFeed[feed.key],
+                        isLoading = feed.key in uiState.loadingFeeds,
+                        isLoadingMore = feed.key in uiState.loadingMoreFeeds,
+                        error = uiState.errorsByFeed[feed.key],
+                        loadMoreError = uiState.loadMoreErrorsByFeed[feed.key],
+                        hasMore = uiState.hasMoreByFeed[feed.key] == true,
+                        paginationToken = uiState.paginationTokensByFeed[feed.key] ?: 0L,
+                        isActive = pagerState.currentPage == page,
+                        cachedAt = uiState.cachedAtByFeed[feed.key],
+                        emptyMessage = if (feed == HomeFeed.Following) "关注的人还没有发布话题" else "暂无话题",
+                        featuredBadge = when (feed) {
+                            HomeFeed.Hot -> "今日最热"
+                            HomeFeed.R2 -> "R2 排序"
+                            else -> "最新活跃"
+                        },
+                        readIds = if (uiState.dimReadTopics) uiState.readIds else emptySet(),
+                        offlineIds = uiState.offlineIds,
+                        showCommunityPulse = feed == HomeFeed.All && uiState.communityPulseEnabled,
+                        onRefresh = {
+                            if (pagerState.currentPage == page) viewModel.refresh(feed)
+                        },
+                        onLoadMore = { viewModel.loadMore(feed) },
+                        endMessage = if (feed == HomeFeed.Hot || feed == HomeFeed.R2) {
+                            "已展示全部榜单话题"
+                        } else {
+                            "没有更多话题了"
+                        },
+                        onTopicClick = onTopicClick,
+                        onNodeClick = onNodeClick,
+                    )
+                }
+            }
         }
     }
 }
@@ -230,6 +249,7 @@ private fun FeedPage(
     isActive: Boolean,
     /** 非空 = 列表来自本地快照，值是快照时间（毫秒）。 */
     cachedAt: Long?,
+    emptyMessage: String,
     featuredBadge: String,
     readIds: Set<Long> = emptySet(),
     offlineIds: Set<Long> = emptySet(),
@@ -283,7 +303,7 @@ private fun FeedPage(
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                text = "暂无话题",
+                                text = emptyMessage,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

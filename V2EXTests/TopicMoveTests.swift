@@ -278,6 +278,30 @@ final class TopicMoveTests: XCTestCase {
         _ = try await move()
         XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "POST"])
     }
+    func testPostReplyAnchorReturnsSubmission() async throws -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/t/123#reply27")
+        let result = try await move()
+        XCTAssertEqual(result, .submitted(target))
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "POST"])
+    }
+    func testAbsolutePostReplyAnchorReturnsSubmission() async throws -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "https://www.v2ex.com/t/123#reply27")
+        let result = try await move()
+        XCTAssertEqual(result, .submitted(target))
+        XCTAssertEqual(MoveProtocol.requests.count, 3)
+    }
+    func testPostAnchorCannotBypassSameTopicCheck() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/t/456#reply27")
+        await expect(.response) { _ = try await self.move() }
+    }
+    func testPostAnchorCannotBypassSameOriginCheck() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "https://example.invalid/t/123#reply27")
+        await expect(.response) { _ = try await self.move() }
+    }
+    func testPostAnchorCannotBypassQueryCheck() async -> Void {
+        enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/t/123?next=other#reply27")
+        await expect(.response) { _ = try await self.move() }
+    }
     func testSubmittedMoveDoesNotWaitForNodeChange() async throws {
         enqueue(topic()); enqueue(form); enqueue("", status: 302, location: "/t/123")
         enqueue(topic()); enqueue(topic()); enqueue(topic("sandbox"))

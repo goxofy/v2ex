@@ -90,7 +90,7 @@ final class TopicMoveService {
                       let location = http.value(forHTTPHeaderField: "Location"),
                       let target = URL(string: location, relativeTo: base)?.absoluteURL else { throw MoveFailure.response }
                 if ReplyPage.sameOrigin(target, base), ["/signin", "/2fa"].contains(target.path) { throw MoveFailure.session }
-                guard allowed(target, path: "/t/\(id)") else { throw MoveFailure.response }
+                guard allowed(target, path: "/t/\(id)", allowFragment: true) else { throw MoveFailure.response }
             } else {
                 guard (200..<300).contains(http.statusCode) else { throw MoveFailure.rejected }
                 guard let html = String(data: data, encoding: .utf8) else { throw MoveFailure.response }
@@ -179,8 +179,8 @@ final class TopicMoveService {
         throw MoveFailure.unavailable
     }
 
-    private func allowed(_ url: URL, path: String) -> Bool {
-        ReplyPage.sameOrigin(url, base) && url.path == path && url.user == nil && url.password == nil && url.fragment == nil &&
+    private func allowed(_ url: URL, path: String, allowFragment: Bool = false) -> Bool {
+        ReplyPage.sameOrigin(url, base) && url.path == path && url.user == nil && url.password == nil && (allowFragment || url.fragment == nil) &&
             (url.query == nil || path.hasPrefix("/api/"))
     }
 

@@ -2,6 +2,8 @@ package com.vibe.v2ex.feature.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vibe.v2ex.data.datastore.HomeTab
+import com.vibe.v2ex.data.datastore.HomeTabsStore
 import com.vibe.v2ex.data.datastore.FollowedNodesStore
 import com.vibe.v2ex.data.datastore.ReadStateStore
 import com.vibe.v2ex.data.datastore.SettingsDataStore
@@ -25,7 +27,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** Home feed tabs: 全部 / 最热 / 关注 + one chip per followed node (first 8). */
+/** Independently configured home tabs, up to fifteen entries. */
 sealed interface HomeFeed {
     val key: String
     val title: String
@@ -84,6 +86,7 @@ class HomeViewModel @Inject constructor(
     private val feedCacheRepository: FeedCacheRepository,
     private val nodesRepository: NodesRepository,
     private val followedNodesStore: FollowedNodesStore,
+    private val homeTabsStore: HomeTabsStore,
     private val moderationStore: ModerationStore,
     private val networkErrors: NetworkErrorMessages,
     private val topicPreviews: TopicPreviewCache,
@@ -97,8 +100,6 @@ class HomeViewModel @Inject constructor(
     private data class FeedSnapshot(
         val topics: List<Topic>,
         val page: Int,
-        /** Followed-node sources that still advertise a later page. */
-        val sources: List<String>,
         val hasMore: Boolean,
     )
 
@@ -113,10 +114,15 @@ class HomeViewModel @Inject constructor(
     private val displayedRawTopics = mutableMapOf<String, List<Topic>>()
     private val requestGenerations = mutableMapOf<String, Long>()
     private var followedNames: List<String> = emptyList()
-    private var receivedFollowedNames = false
     private var moderationRules: HomeModerationRules? = null
 
     init {
+        viewModelScope.launch {
+            repository.sessionRevision.collect {
+                invalidateFollowingFeed()
+                if (_uiState.value.currentFeed == HomeFeed.Following) loadIfNeeded(HomeFeed.Following)
+            }
+        }
         viewModelScope.launch {
             combine(
                 moderationStore.hiddenTopicIds,
@@ -129,7 +135,7 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { state ->
                     state.copy(
                         topicsByFeed = state.topicsByFeed.mapValues { (feedKey, topics) ->
-                            displayedRawTopics[feedKey]?.let(::visibleTopics) ?: topics
+                            displayedRawTopics[feedKey]?.let { visibleTopics(it, feedKey) } ?: topics
                         },
                     )
                 }
@@ -153,30 +159,36 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             followedNodesStore.names.collect { names ->
-                val changed = receivedFollowedNames && followedNames != names
-                receivedFollowedNames = true
                 followedNames = names
                 val liveTitles = nodesRepository.cachedTitleMap()
-                val nodeFeeds = names.take(MAX_NODE_CHIPS)
-                    .map { HomeFeed.Node(it, NodeCatalog.displayName(it, liveTitles)) }
-                _uiState.update { state ->
-                    val feeds = listOf(HomeFeed.All, HomeFeed.Hot, HomeFeed.R2, HomeFeed.Following) + nodeFeeds
-                    val selectedKey = state.currentFeed.key
-                    val selectedIndex = feeds.indexOfFirst { it.key == selectedKey }
-                    state.copy(
-                        feeds = feeds,
-                        currentIndex = if (selectedIndex >= 0) {
-                            selectedIndex
-                        } else {
-                            state.currentIndex.coerceIn(0, feeds.lastIndex)
-                        },
-                    )
+                homeTabsStore.initialize(names.map { HomeTab("node:$it", NodeCatalog.displayName(it, liveTitles)) })
+            }
+        }
+        viewModelScope.launch {
+            homeTabsStore.items.collect { saved ->
+                if (saved == null) return@collect
+                val feeds = saved.map { tab ->
+                    when (tab.key) {
+                        "all" -> HomeFeed.All
+                        "hot" -> HomeFeed.Hot
+                        "r2" -> HomeFeed.R2
+                        "following" -> HomeFeed.Following
+                        else -> HomeFeed.Node(tab.key.removePrefix("node:"), tab.title)
+                    }
                 }
-                if (changed) invalidateFollowingFeed()
+                val previous = _uiState.value.currentFeed.key
+                if (feeds.none { it.key == previous }) invalidateRequest(previous)
+                _uiState.update { state ->
+                    state.copy(feeds = feeds, currentIndex = feeds.indexOfFirst { it.key == state.currentFeed.key }.coerceAtLeast(0))
+                }
                 loadIfNeeded(_uiState.value.currentFeed)
             }
         }
     }
+
+    fun saveTabs(tabs: List<HomeTab>): Unit = homeTabsStore.save(tabs)
+    fun defaultTabs(): List<HomeTab> = HomeTabsStore.defaults(followedNames.map { HomeTab("node:$it", NodeCatalog.displayName(it, nodesRepository.cachedTitleMap())) })
+    suspend fun tabNodes(): Result<List<com.vibe.v2ex.data.model.Node>> = nodesRepository.allNodes()
 
     fun selectFeed(index: Int) {
         val state = _uiState.value
@@ -213,8 +225,7 @@ class HomeViewModel @Inject constructor(
             }
         }
         val request = nextGeneration(feed.key)
-        val sources = if (feed == HomeFeed.Following) followedNames else emptyList()
-        val diskKey = diskCacheKey(feed, sources)
+        val diskKey = feed.key
         _uiState.update {
             it.copy(
                 loadingFeeds = it.loadingFeeds + feed.key,
@@ -224,9 +235,9 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             // 断网冷启动时先把上次的快照放出来 —— 正文早已离线，缺的只是能点进去的列表。
-            if (!force) hydrateFromCache(feed, request, diskKey)
+            if (!force && feed != HomeFeed.Following) hydrateFromCache(feed, request, diskKey)
 
-            val result = runCatching { fetch(feed = feed, page = 1, sources = sources) }
+            val result = runCatching { fetch(feed = feed, page = 1) }
             if (!isCurrent(feed.key, request) || _uiState.value.currentFeed.key != feed.key) return@launch
             result.onSuccess { fetched ->
                 val snapshot = fetched
@@ -235,7 +246,7 @@ class HomeViewModel @Inject constructor(
                 // Only a live response owns a cursor. A disk snapshot remains display-only until this succeeds.
                 _uiState.update {
                     it.copy(
-                        topicsByFeed = it.topicsByFeed + (feed.key to visibleTopics(snapshot.topics)),
+                        topicsByFeed = it.topicsByFeed + (feed.key to visibleTopics(snapshot.topics, feed.key)),
                         loadingFeeds = it.loadingFeeds - feed.key,
                         cachedAtByFeed = it.cachedAtByFeed - feed.key,
                         errorsByFeed = it.errorsByFeed - feed.key,
@@ -244,7 +255,7 @@ class HomeViewModel @Inject constructor(
                             (feed.key to ((it.paginationTokensByFeed[feed.key] ?: 0L) + 1L)),
                     )
                 }
-                runCatching { feedCacheRepository.save(diskKey, snapshot.topics) }
+                if (feed != HomeFeed.Following) runCatching { feedCacheRepository.save(diskKey, snapshot.topics) }
             }.onFailure {
                 val message = networkErrors.describe(result.exceptionOrNull(), "加载失败")
                 _uiState.update {
@@ -272,7 +283,7 @@ class HomeViewModel @Inject constructor(
         if (feed.key in state.loadingFeeds || feed.key in state.loadingMoreFeeds) return
 
         val request = nextGeneration(feed.key)
-        val diskKey = diskCacheKey(feed, followedNames)
+        val diskKey = feed.key
         _uiState.update {
             it.copy(
                 loadingMoreFeeds = it.loadingMoreFeeds + feed.key,
@@ -281,7 +292,7 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             val result = runCatching {
-                fetch(feed = feed, page = previous.page + 1, sources = previous.sources)
+                fetch(feed = feed, page = previous.page + 1)
             }
             if (!isCurrent(feed.key, request) || _uiState.value.currentFeed.key != feed.key) return@launch
             result.onSuccess { fetched ->
@@ -292,7 +303,7 @@ class HomeViewModel @Inject constructor(
                 displayedRawTopics[feed.key] = snapshot.topics
                 _uiState.update {
                     it.copy(
-                        topicsByFeed = it.topicsByFeed + (feed.key to visibleTopics(snapshot.topics)),
+                        topicsByFeed = it.topicsByFeed + (feed.key to visibleTopics(snapshot.topics, feed.key)),
                         loadingMoreFeeds = it.loadingMoreFeeds - feed.key,
                         loadMoreErrorsByFeed = it.loadMoreErrorsByFeed - feed.key,
                         cachedAtByFeed = it.cachedAtByFeed - feed.key,
@@ -302,7 +313,7 @@ class HomeViewModel @Inject constructor(
                             (feed.key to ((it.paginationTokensByFeed[feed.key] ?: 0L) + 1L)),
                     )
                 }
-                runCatching { feedCacheRepository.save(diskKey, snapshot.topics) }
+                if (feed != HomeFeed.Following) runCatching { feedCacheRepository.save(diskKey, snapshot.topics) }
             }.onFailure { error ->
                 _uiState.update {
                     it.copy(
@@ -315,49 +326,28 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private suspend fun fetch(feed: HomeFeed, page: Int, sources: List<String>): FeedSnapshot =
-        fetchFeed(feed, page, sources).also { topicPreviews.remember(it.topics) }
+    private suspend fun fetch(feed: HomeFeed, page: Int): FeedSnapshot =
+        fetchFeed(feed, page).also { if (feed != HomeFeed.Following) topicPreviews.remember(it.topics) }
 
-    private suspend fun fetchFeed(feed: HomeFeed, page: Int, sources: List<String>): FeedSnapshot = when (feed) {
+    private suspend fun fetchFeed(feed: HomeFeed, page: Int): FeedSnapshot = when (feed) {
         HomeFeed.Hot -> FeedSnapshot(
             topics = repository.hotTopics().getOrThrow(),
             page = 1,
-            sources = emptyList(),
             hasMore = false,
         )
         HomeFeed.R2 -> FeedSnapshot(
             topics = repository.r2Topics().getOrThrow(),
             page = 1,
-            sources = emptyList(),
             hasMore = false,
         )
         HomeFeed.All -> repository.publicTopicPage(nodeName = null, page = page).getOrThrow().let {
-            FeedSnapshot(topics = it.topics, page = page, sources = emptyList(), hasMore = it.hasMore)
+            FeedSnapshot(topics = it.topics, page = page, hasMore = it.hasMore)
         }
         is HomeFeed.Node -> repository.publicTopicPage(nodeName = feed.name, page = page).getOrThrow().let {
-            FeedSnapshot(topics = it.topics, page = page, sources = emptyList(), hasMore = it.hasMore)
+            FeedSnapshot(topics = it.topics, page = page, hasMore = it.hasMore)
         }
-        HomeFeed.Following -> {
-            if (sources.isEmpty()) {
-                repository.publicTopicPage(nodeName = null, page = page).getOrThrow().let {
-                    FeedSnapshot(topics = it.topics, page = page, sources = emptyList(), hasMore = it.hasMore)
-                }
-            } else {
-                val merged = ArrayList<Topic>()
-                val remaining = ArrayList<String>()
-                // One failed source fails the page so the complete cursor can be retried unchanged.
-                for (nodeName in sources) {
-                    val result = repository.publicTopicPage(nodeName = nodeName, page = page).getOrThrow()
-                    merged += result.topics
-                    if (result.hasMore) remaining += nodeName
-                }
-                FeedSnapshot(
-                    topics = merged.distinctBy { it.id }.sortedByDescending { it.activityTimestamp },
-                    page = page,
-                    sources = remaining,
-                    hasMore = remaining.isNotEmpty(),
-                )
-            }
+        HomeFeed.Following -> repository.followingTopics(page).let {
+            FeedSnapshot(topics = it.topics, page = page, hasMore = it.hasMore)
         }
     }
 
@@ -383,7 +373,7 @@ class HomeViewModel @Inject constructor(
         displayedRawTopics[feedKey] = snapshot.topics
         _uiState.update {
             it.copy(
-                topicsByFeed = it.topicsByFeed + (feedKey to visibleTopics(snapshot.topics)),
+                topicsByFeed = it.topicsByFeed + (feedKey to visibleTopics(snapshot.topics, feedKey)),
                 hasMoreByFeed = it.hasMoreByFeed + (feedKey to snapshot.hasMore),
                 cachedAtByFeed = it.cachedAtByFeed - feedKey,
                 loadMoreErrorsByFeed = it.loadMoreErrorsByFeed - feedKey,
@@ -421,14 +411,11 @@ class HomeViewModel @Inject constructor(
                 errorsByFeed = it.errorsByFeed - key,
                 loadMoreErrorsByFeed = it.loadMoreErrorsByFeed - key,
                 hasMoreByFeed = it.hasMoreByFeed - key,
+                paginationTokensByFeed = it.paginationTokensByFeed - key,
                 cachedAtByFeed = it.cachedAtByFeed - key,
             )
         }
     }
-
-    /** Followed-feed disk snapshots are source-specific so an edited node list never reuses stale rows. */
-    private fun diskCacheKey(feed: HomeFeed, sources: List<String>): String =
-        if (feed == HomeFeed.Following) "${feed.key}:${sources.joinToString(",")}" else feed.key
 
     /** Cosmetic home-feed-only ad filter (hides entirely) — same keyword list as iOS. */
     private fun isPromotion(topic: Topic): Boolean {
@@ -436,10 +423,10 @@ class HomeViewModel @Inject constructor(
         return PROMOTION_KEYWORDS.any { haystack.contains(it) }
     }
 
-    private fun visibleTopics(raw: List<Topic>): List<Topic> {
+    private fun visibleTopics(raw: List<Topic>, feedKey: String = "all"): List<Topic> {
         val rules = moderationRules ?: return emptyList()
         return raw.filterNot { topic ->
-            isPromotion(topic) || moderationStore.isTopicHidden(
+            (feedKey != HomeFeed.Following.key && isPromotion(topic)) || moderationStore.isTopicHidden(
                 topic = topic,
                 hiddenIds = rules.hiddenTopicIds,
                 blockedUsers = rules.blockedUsernames,
@@ -450,7 +437,6 @@ class HomeViewModel @Inject constructor(
     }
 
     private companion object {
-        const val MAX_NODE_CHIPS = 8
         val PROMOTION_KEYWORDS = listOf(
             "邀请码", "免费送", "动态住宅", "住宅 ip", "住宅ip", "流量用不完", "注册送", "返利",
         )
