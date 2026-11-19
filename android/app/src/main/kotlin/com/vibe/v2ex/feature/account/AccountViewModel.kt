@@ -10,6 +10,7 @@ import com.vibe.v2ex.data.moderation.ModerationStore
 import com.vibe.v2ex.data.remote.V2exApiV2
 import com.vibe.v2ex.data.remote.WebSessionService
 import com.vibe.v2ex.data.remote.WebLoginCandidate
+import com.vibe.v2ex.data.remote.VerifiedBrowserLogin
 import com.vibe.v2ex.data.remote.WebSessionVerification
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -17,7 +18,6 @@ import kotlinx.coroutines.CancellationException
 import com.vibe.v2ex.data.repository.FavoritesRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.IOException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,15 +26,12 @@ import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import javax.inject.Inject
 
-/** 网页登录候选会话的确认结果。 */
+/** 浏览器已确认的会话是否仍可保存。 */
 enum class WebLoginConfirmation {
-    /** 服务端认这份 cookie，已落盘。 */
+    /** 当前浏览器已验证设置页，会话已落盘。 */
     ACCEPTED,
 
-    /** 服务端明确不认（还没登录完，或两步验证没走完）—— 登录页留在原地等用户继续。 */
-    NOT_SIGNED_IN,
-
-    /** 网络没给出结论。同样不落盘：与其存一份可能是匿名的会话，不如让用户重试。 */
+    /** 页面或账号已变化，旧确认结果不落盘。 */
     UNVERIFIED,
 }
 
@@ -99,7 +96,7 @@ class AccountViewModel @Inject constructor(
 
     fun openWebLogin(): Unit {
         if (_uiState.value.clearingWebLogin) return
-        loginAttempt.begin()
+        loginAttempt.begin(secureStore.accountCredentialsRevision.value)
         _uiState.value = _uiState.value.copy(showWebLogin = true)
     }
 
@@ -108,26 +105,16 @@ class AccountViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(showWebLogin = false)
     }
 
-    /** Only a confirmed, still-current browser attempt may replace the saved account. */
-    suspend fun confirmWebLogin(candidate: WebLoginCandidate): WebLoginConfirmation {
-        val attempt = loginAttempt.current()
-        val revision = secureStore.accountCredentialsRevision.value
-        repeat(VERIFY_ATTEMPTS) { index ->
-            if (index > 0) delay(VERIFY_RETRY_DELAY_MS)
-            if (!loginAttempt.accepts(attempt) || !candidate.isCurrent() || revision != secureStore.accountCredentialsRevision.value) return WebLoginConfirmation.UNVERIFIED
-            val result = webSessionService.verifyCookie(candidate)
-            currentCoroutineContext().ensureActive()
-            if (!loginAttempt.accepts(attempt) || !candidate.isCurrent() || revision != secureStore.accountCredentialsRevision.value) return WebLoginConfirmation.UNVERIFIED
-            when (result) {
-                WebSessionVerification.AUTHENTICATED -> {
-                    onWebLoginSuccess(candidate)
-                    return WebLoginConfirmation.ACCEPTED
-                }
-                WebSessionVerification.SIGNED_OUT -> return WebLoginConfirmation.NOT_SIGNED_IN
-                WebSessionVerification.UNVERIFIED -> Unit
-            }
+    /** Browser proof is the first-login gate; another HTTP client must not re-challenge it. */
+    suspend fun confirmWebLogin(confirmed: VerifiedBrowserLogin): WebLoginConfirmation {
+        currentCoroutineContext().ensureActive()
+        val candidate = confirmed.session
+        if (!loginAttempt.accepts(loginAttempt.current(), secureStore.accountCredentialsRevision.value) || !candidate.isCurrent()) {
+            return WebLoginConfirmation.UNVERIFIED
         }
-        return WebLoginConfirmation.UNVERIFIED
+        // No suspension between the lifecycle checks and persistence on the UI thread.
+        onWebLoginSuccess(candidate)
+        return WebLoginConfirmation.ACCEPTED
     }
 
     private fun onWebLoginSuccess(candidate: WebLoginCandidate): Unit {
@@ -165,7 +152,7 @@ class AccountViewModel @Inject constructor(
         try {
             WebLoginBrowserData.clear()
             currentCoroutineContext().ensureActive()
-            if (_uiState.value.showWebLogin) loginAttempt.begin()
+            if (_uiState.value.showWebLogin) loginAttempt.begin(secureStore.accountCredentialsRevision.value)
         } finally {
             _uiState.value = _uiState.value.copy(clearingWebLogin = false)
         }
@@ -273,10 +260,5 @@ class AccountViewModel @Inject constructor(
             else -> "服务器暂时无法验证 Token，未更改已保存的 Token"
         }
         else -> "Token 验证失败，未更改已保存的 Token，请稍后重试"
-    }
-
-    private companion object {
-        const val VERIFY_ATTEMPTS = 3
-        const val VERIFY_RETRY_DELAY_MS = 800L
     }
 }

@@ -145,11 +145,14 @@ class WebLoginVerifierTest {
         }
     }
 
-    @Test fun javascriptUsernameIsDecodedAsJsonAndValidated(): Unit {
-        assertEquals("fixture_user", WebLoginPage.usernameFromJavascript("\"fixture\\u005fuser\""))
-        for (raw in listOf(null, "null", "true", "123", "{}", "\"\"", "\"bad/name\"", "\"quote\\\"name\"")) {
-            assertNull(raw, WebLoginPage.usernameFromJavascript(raw))
-        }
+    @Test fun candidateDoesNotExposeCredentialsInToString(): Unit {
         assertFalse(candidate.toString().contains(candidate.cookie))
+    }
+
+    @Test fun backgroundCheckAcceptsBioOnlySettingsWithoutOrdinarySignout(): Unit = runBlocking {
+        val bioOnly = settings.replace("<input name=\"website\">", "")
+            .replace("href=\"/signout?once=fixture\"", "href=\"javascript:signout();\"")
+        enqueue(bioOnly)
+        assertEquals(WebSessionVerification.AUTHENTICATED, verifier.verify(candidate))
     }
 }

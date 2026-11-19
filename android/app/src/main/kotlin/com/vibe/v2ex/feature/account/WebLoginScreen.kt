@@ -5,6 +5,10 @@ import android.graphics.Bitmap
 import android.webkit.CookieManager
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.SslErrorHandler
+import android.net.http.SslError
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
@@ -38,26 +42,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.vibe.v2ex.data.remote.WebLoginCandidate
+import com.vibe.v2ex.data.remote.BrowserLoginEvidence
+import com.vibe.v2ex.data.remote.VerifiedBrowserLogin
 import com.vibe.v2ex.data.remote.WebLoginPage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-
-private val SCRAPE_USERNAME_JS = """
-(function() {
-  if (location.origin !== '${WebLoginPage.BASE}') return '';
-  var links = document.querySelectorAll('${WebLoginPage.ACCOUNT_LINKS}');
-  var names = [];
-  for (var i = 0; i < links.length; i++) {
-    if (links[i].closest('.topic_content,.reply_content,.topic_append')) continue;
-    var url = new URL(links[i].getAttribute('href'), location.href);
-    if (url.origin !== location.origin || url.username || url.password) continue;
-    var match = url.pathname.match(/^\/member\/([A-Za-z0-9_]{1,100})$/);
-    if (match && names.indexOf(match[1]) < 0) names.push(match[1]);
-  }
-  return names.length === 1 ? names[0] : '';
-})()
-"""
 
 /** A real WebView browser session; challenges and two-factor authentication remain interactive. */
 @SuppressLint("SetJavaScriptEnabled")
@@ -65,10 +54,10 @@ private val SCRAPE_USERNAME_JS = """
 @Composable
 fun WebLoginScreen(
     onCancel: () -> Unit,
-    onConfirm: suspend (WebLoginCandidate) -> WebLoginConfirmation,
+    onConfirm: suspend (VerifiedBrowserLogin) -> WebLoginConfirmation,
     onReset: suspend () -> Unit,
 ): Unit {
-    var candidate by remember { mutableStateOf<WebLoginCandidate?>(null) }
+    var candidate by remember { mutableStateOf<VerifiedBrowserLogin?>(null) }
     var browser by remember { mutableStateOf<WebView?>(null) }
     var verifying by remember { mutableStateOf(false) }
     var resetting by remember { mutableStateOf(false) }
@@ -87,13 +76,12 @@ fun WebLoginScreen(
         try {
             when (confirm(pending)) {
                 WebLoginConfirmation.ACCEPTED -> Unit
-                WebLoginConfirmation.NOT_SIGNED_IN -> message = "尚未完成登录，请继续完成网页登录或两步验证。"
-                WebLoginConfirmation.UNVERIFIED -> message = "暂时无法确认登录，可能仍需网站验证或网络受限；不会保存未确认的会话。可手动刷新后重试。"
+                WebLoginConfirmation.UNVERIFIED -> message = "登录页面或账号状态已变化，请关闭后重新打开登录页。[SESSION_CHANGED]"
             }
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
-            message = "暂时无法确认登录，请检查网络后重试。"
+            message = "登录状态保存失败，请关闭登录页后重试。[SAVE_FAILED]"
         } finally {
             verifying = false
             if (candidate === pending) candidate = null
@@ -147,9 +135,11 @@ fun WebLoginScreen(
                     val view = browser ?: return@TextButton
                     candidate = null
                     message = null
-                    (view.tag as WebLoginBrowserState).navigated()
+                    val state = view.tag as WebLoginBrowserState
+                    val target = state.refreshUrl(view.url)
+                    state.navigated()
                     // Explicit GET, never WebView.reload() of a previously submitted login form.
-                    view.loadUrl(view.url?.takeIf(WebLoginPage::isSite) ?: "${WebLoginPage.BASE}/signin")
+                    view.loadUrl(target, mapOf("Cache-Control" to "no-cache"))
                 }) { Text("刷新") }
                 TextButton(onClick = { help = true }) { Text("帮助") }
                 IconButton(onClick = onCancel) { Icon(Icons.Filled.Close, contentDescription = "关闭") }
@@ -167,6 +157,8 @@ fun WebLoginScreen(
                         settings.domStorageEnabled = true
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
+                        // Authentication evidence must come from the network, not an old settings page.
+                        settings.cacheMode = WebSettings.LOAD_NO_CACHE
                         // Preserve the actual Android WebView UA, including its WebView identity.
                         val loginView = this
                         CookieManager.getInstance().apply {
@@ -177,6 +169,7 @@ fun WebLoginScreen(
                             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?): Unit {
                                 state.navigated()
                                 candidate = null
+                                message = null
                                 super.onPageStarted(view, url, favicon)
                             }
 
@@ -184,21 +177,60 @@ fun WebLoginScreen(
                                 super.onPageFinished(view, url)
                                 val token = state.current()
                                 if (!state.accepts(token) || candidate != null || !WebLoginPage.isSite(url) || view.url != url) return
-                                view.evaluateJavascript(SCRAPE_USERNAME_JS) { raw ->
+                                view.evaluateJavascript(BrowserLoginEvidence.script) { raw ->
                                     if (!state.accepts(token) || browser !== view || view.url != url || candidate != null) return@evaluateJavascript
-                                    val username = WebLoginPage.usernameFromJavascript(raw) ?: return@evaluateJavascript
-                                    val cookie = CookieManager.getInstance().getCookie(WebLoginPage.BASE).orEmpty()
-                                    if (!WebLoginPage.validHeader(cookie)) return@evaluateJavascript
-                                    CookieManager.getInstance().flush()
-                                    candidate = WebLoginCandidate(cookie, username, view.settings.userAgentString) {
-                                        state.accepts(token) && browser === view && view.url == url
+                                    val evidence = BrowserLoginEvidence.fromJavascript(raw)
+                                    if (evidence == null) {
+                                        message = "无法读取网页登录状态，请刷新重试。[DOM_READ]"
+                                        return@evaluateJavascript
+                                    }
+                                    when (val action = state.inspect(evidence, url)) {
+                                        BrowserLoginAction.OpenSettings -> {
+                                            // Stay in this verified browser; do not switch to OkHttp.
+                                            state.navigated()
+                                            message = "正在当前浏览器中确认设置页…"
+                                            view.loadUrl("${WebLoginPage.BASE}/settings", mapOf("Cache-Control" to "no-cache"))
+                                        }
+                                        is BrowserLoginAction.Wait -> message = action.reason?.message
+                                        is BrowserLoginAction.Confirm -> {
+                                            val cookies = CookieManager.getInstance()
+                                            val cookie = cookies.getCookie("${WebLoginPage.BASE}/settings").orEmpty()
+                                            val confirmed = VerifiedBrowserLogin.confirm(evidence, action.username, url, cookie, view.settings.userAgentString) {
+                                                state.accepts(token) && browser === view && view.url == url
+                                            }
+                                            if (confirmed == null) {
+                                                message = "设置页已加载，但会话数据不完整，请刷新重试。[SESSION_DATA]"
+                                            } else {
+                                                cookies.flush()
+                                                candidate = confirmed
+                                            }
+                                        }
                                     }
                                 }
                             }
 
                             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError): Unit {
                                 super.onReceivedError(view, request, error)
-                                if (request.isForMainFrame && state.accepts(state.current())) message = "网页加载失败，请检查网络或查看登录帮助。"
+                                if (request.isForMainFrame && browser === view && state.failed()) {
+                                    candidate = null
+                                    message = "网页加载失败，请检查网络或查看登录帮助。[MAIN_NETWORK]"
+                                }
+                            }
+
+                            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse): Unit {
+                                super.onReceivedHttpError(view, request, response)
+                                if (request.isForMainFrame && browser === view && state.failed()) {
+                                    candidate = null
+                                    message = "网站返回 HTTP ${response.statusCode}，请完成页面验证后刷新重试。[MAIN_HTTP]"
+                                }
+                            }
+
+                            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError): Unit {
+                                handler.cancel()
+                                if (browser === view && error.url == view.url && state.failed()) {
+                                    candidate = null
+                                    message = "网页证书验证失败，未保存登录状态。[MAIN_TLS]"
+                                }
                             }
                         }
                         browser = this
