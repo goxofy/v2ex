@@ -65,7 +65,7 @@ internal class WebLoginBrowserState {
         val reason = evidence.reason(expected)
         return if (WebLoginPage.isSettings(url) && reason == BrowserLoginReason.VERIFIED) {
             BrowserLoginAction.Confirm(expected)
-        } else BrowserLoginAction.Wait(if (reason == BrowserLoginReason.VERIFIED) BrowserLoginReason.STRUCTURE else reason)
+        } else BrowserLoginAction.Wait(if (reason == BrowserLoginReason.VERIFIED) BrowserLoginReason.SETTINGS_PAGE else reason)
     }
 
     fun beginReset(): Long {

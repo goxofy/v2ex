@@ -23,6 +23,25 @@ class BrowserLoginEvidenceTest {
         isCurrent: () -> Boolean = { true },
     ): VerifiedBrowserLogin? = VerifiedBrowserLogin.confirm(value, username, url, cookie, userAgent, isCurrent)
 
+    @Test fun generalSettingsNeedsNoFormNonceProfileFieldsOrSpecificContainer(): Unit {
+        // Synthetic general-tab fixture: deliberately no #Main, form, once, bio or signout link.
+        val general = """<nav class="site-nav"><a href="/member/fixture_user">Account</a></nav>
+            <section><h1>设置</h1><nav>通用 个人资料 头像 密码</nav>
+            <div>楼中楼显示方式</div><button type="button" aria-pressed="true">树形缩进</button></section>"""
+        val parsed = evidence(general)
+        assertEquals(BrowserLoginReason.VERIFIED, parsed.reason(username))
+        assertEquals(WebSessionVerification.AUTHENTICATED, WebLoginPage.classify(general, base, username))
+        assertNotNull(confirm(BrowserLoginEvidence.fromJavascript(javascript(parsed))!!))
+    }
+
+    @Test fun settingsQueryAndFragmentDoNotChangeTheProtectedPath(): Unit {
+        for (url in listOf("${WebLoginPage.BASE}/settings?tab=general", "${WebLoginPage.BASE}/settings#display")) {
+            assertNotNull(confirm(url = url))
+            assertNull(confirm(value = evidence().copy(challenge = true), url = url))
+            assertNull(confirm(value = evidence().copy(loginForm = true), url = url))
+        }
+    }
+
     @Test fun bioOnlyFormWithoutSignoutLinkConfirms(): Unit {
         assertEquals(BrowserLoginReason.VERIFIED, evidence().reason(username))
         assertEquals(WebSessionVerification.AUTHENTICATED, WebLoginPage.classify(settings, base, username))
@@ -43,7 +62,7 @@ class BrowserLoginEvidenceTest {
         }
     }
 
-    @Test fun formRequiresSameOriginSettingsPostOnceAndEditingControl(): Unit {
+    @Test fun settingsFormLayoutIsNotAnAuthenticationRequirement(): Unit {
         for (html in listOf(
             settings.replace("method=\"post\"", "method=\"get\""),
             settings.replace("name=\"once\"", "name=\"not_once\""),
@@ -56,17 +75,16 @@ class BrowserLoginEvidenceTest {
             settings.replace("action=\"/settings\"", "action=\"/other\""),
             settings + "<div id='Main'></div>",
         )) {
-            assertEquals(BrowserLoginReason.STRUCTURE, evidence(html).reason(username))
-            assertNull(confirm(evidence(html)))
+            assertEquals(BrowserLoginReason.VERIFIED, evidence(html).reason(username))
+            assertNotNull(confirm(evidence(html)))
         }
     }
 
-    @Test fun userContentAndSidebarsCannotSupplyIdentityOrSettingsForm(): Unit {
+    @Test fun userContentAndSidebarsCannotSupplyIdentity(): Unit {
         for (html in listOf(
             "<div class='reply_content'>$settings</div>",
             "<div class='topic_content'>$settings</div>",
             settings.replace("id=\"Top\"", "id=\"Rightbar\""),
-            settings.replace("id=\"Main\"", "id=\"Rightbar\""),
             settings.replace("/member/fixture_user", "https://other.invalid/member/fixture_user"),
         )) assertNull(confirm(evidence(html)))
     }
@@ -92,9 +110,9 @@ class BrowserLoginEvidenceTest {
         assertNull(confirm(evidence("Unknown page")))
     }
 
-    @Test fun onlyCanonicalHttpsSettingsCanProduceBrowserProof(): Unit {
-        for (url in listOf(null, "about:blank", "${WebLoginPage.BASE}/", "${WebLoginPage.BASE}/settings?x=1",
-            "${WebLoginPage.BASE}/settings#bio", "http://www.v2ex.com/settings", "https://www.v2ex.com:444/settings",
+    @Test fun onlySameOriginHttpsSettingsPathCanProduceBrowserProof(): Unit {
+        for (url in listOf(null, "about:blank", "${WebLoginPage.BASE}/", "${WebLoginPage.BASE}/settings/other",
+            "${WebLoginPage.BASE}/signin", "${WebLoginPage.BASE}/2fa", "http://www.v2ex.com/settings", "https://www.v2ex.com:444/settings",
             "https://other.invalid/settings", "https://user@www.v2ex.com/settings")) assertNull(confirm(url = url))
         assertNotNull(confirm())
     }
@@ -126,8 +144,7 @@ class BrowserLoginEvidenceTest {
         assertFalse(encoded.contains("private-profile"))
         for (raw in listOf(null, "null", "true", "{}", "\"broken\"", Json.encodeToString("{}"), " ".repeat(16_385),
             javascript(value.copy(version = 2)), javascript(value.copy(names = listOf("bad/name"))),
-            javascript(value.copy(names = List(9) { "name$it" })), javascript(value.copy(mainCount = -1)),
-            javascript(value.copy(settingsForms = 101)), javascript(value.copy(path = "/settings?secret=value")))) {
+            javascript(value.copy(names = List(9) { "name$it" })), javascript(value.copy(path = "/settings?secret=value")))) {
             assertNull(BrowserLoginEvidence.fromJavascript(raw))
         }
     }
