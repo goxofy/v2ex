@@ -52,25 +52,52 @@ class TopicMoveServiceTest {
         enqueue(topic())
         assertTrue(service.permission(123, "session=fake").canMove)
     }
-    @Test fun ordinaryMemberHasNoPermission(): Unit = runBlocking {
-        enqueue(topic(allowed = false))
-        assertFalse(service.permission(123, "session=fake").canMove)
+    @Test fun ordinaryMemberHasNoPermission(): Unit = failure(MoveFailure.Kind.DENIED) {
+        enqueue(topic(allowed = false)); enqueue("", 403)
+        service.permission(123, "session=fake")
     }
-    @Test fun forgedBodyLinkDoesNotGrantPermission(): Unit = runBlocking {
+    @Test fun forgedBodyLinkDoesNotGrantPermission(): Unit = failure(MoveFailure.Kind.DENIED) {
         enqueue(topic(allowed = false, extra = "<div class='topic_content'><a class='op' href='/move/topic/123'>MOVE</a></div>"))
-        assertFalse(service.permission(123, "session=fake").canMove)
+        enqueue("", 403)
+        service.permission(123, "session=fake")
     }
-    @Test fun forgedHeaderInContentIsRemoved(): Unit = runBlocking {
-        enqueue(topic(allowed = false, extra = "<div class='topic_content'><div id='Main'><div class='box'><div class='header'><h1>x</h1><a class='op' href='/move/topic/123'>MOVE</a></div></div></div></div>"))
-        assertFalse(service.permission(123, "session=fake").canMove)
+    @Test fun forgedHeaderInContentIsRemoved(): Unit {
+        val html = topic(allowed = false, extra = "<div class='topic_content'><div id='Main'><div class='box'><div class='header'><h1>x</h1><a class='op' href='/move/topic/123'>MOVE</a></div></div></div></div>")
+        assertFalse(TopicMovePage(html, server.url("/")).topic(123).canMove)
     }
-    @Test fun differentTopicLinkDoesNotGrantPermission(): Unit = runBlocking {
-        enqueue(topic().replace("/move/topic/123", "/move/topic/456"))
-        assertFalse(service.permission(123, "session=fake").canMove)
+    @Test fun differentTopicLinkDoesNotGrantPermission(): Unit {
+        assertFalse(TopicMovePage(topic().replace("/move/topic/123", "/move/topic/456"), server.url("/")).topic(123).canMove)
     }
-    @Test fun crossOriginLinkDoesNotGrantPermission(): Unit = runBlocking {
-        enqueue(topic().replace("href='/move/topic/123'", "href='https://example.invalid/move/topic/123'"))
-        assertFalse(service.permission(123, "session=fake").canMove)
+    @Test fun crossOriginLinkDoesNotGrantPermission(): Unit {
+        val html = topic().replace("href='/move/topic/123'", "href='https://example.invalid/move/topic/123'")
+        assertFalse(TopicMovePage(html, server.url("/")).topic(123).canMove)
+    }
+    @Test fun mobilePageWithoutLinkUsesValidForm(): Unit = runBlocking {
+        enqueue(topic(allowed = false)); enqueue(form)
+        assertTrue(service.permission(123, "session=fake").canMove)
+        val requests = (0 until 2).map { server.takeRequest() }
+        assertEquals(listOf("GET", "GET"), requests.map { it.method })
+        assertEquals(listOf("/t/123", "/move/topic/123"), requests.map { it.url.encodedPath })
+    }
+    @Test fun fallbackLoginIsNotPermission(): Unit = failure(MoveFailure.Kind.SESSION) {
+        enqueue(topic(allowed = false)); enqueue("", 302, "/signin")
+        service.permission(123, "session=fake")
+    }
+    @Test fun fallbackChallengeIsNotPermission(): Unit = failure(MoveFailure.Kind.UNAVAILABLE) {
+        enqueue(topic(allowed = false)); enqueue("<title>Just a moment</title>" + form)
+        service.permission(123, "session=fake")
+    }
+    @Test fun fallbackCrossOriginFormIsNotPermission(): Unit = failure(MoveFailure.Kind.UNAVAILABLE) {
+        enqueue(topic(allowed = false)); enqueue(form.replace("action=\"/move/topic/123\"", "action=\"https://example.invalid/move/topic/123\""))
+        service.permission(123, "session=fake")
+    }
+    @Test fun fallbackCrossOriginRedirectIsNotFollowed(): Unit = failure(MoveFailure.Kind.UNAVAILABLE) {
+        enqueue(topic(allowed = false)); enqueue("", 302, "https://example.invalid/move/topic/123")
+        try { service.permission(123, "session=fake") } finally { assertEquals(2, server.requestCount) }
+    }
+    @Test fun fallbackBodyFormIsNotPermission(): Unit = failure(MoveFailure.Kind.UNAVAILABLE) {
+        enqueue(topic(allowed = false)); enqueue("<div class='topic_content'>" + form + "</div>")
+        service.permission(123, "session=fake")
     }
     @Test fun prepareLoadsShortcutsAndAliases(): Unit = runBlocking {
         enqueue(topic()); enqueue(form)
@@ -83,6 +110,13 @@ class TopicMoveServiceTest {
     @Test fun malformedDirectoryDoesNotEnableSubmission(): Unit = failure(MoveFailure.Kind.UNAVAILABLE) {
         enqueue(topic()); enqueue(form); enqueue("{}")
         service.prepare(123, "session=fake")
+    }
+    @Test fun moveWithoutHeaderLinkRevalidatesAndPostsOnce(): Unit = runBlocking {
+        enqueue(topic(allowed = false)); enqueue(form); enqueue(form)
+        enqueue("", 302, "/t/123"); enqueue(topic("sandbox", allowed = false))
+        assertEquals("sandbox", move().name)
+        val requests = (0 until 5).map { server.takeRequest() }
+        assertEquals(listOf("GET", "GET", "GET", "POST", "GET"), requests.map { it.method })
     }
     @Test fun direct200StillVerifiesUsingGet(): Unit = runBlocking {
         enqueue(topic()); enqueue(form); enqueue(topic("sandbox")); enqueue(topic("sandbox"))
@@ -123,7 +157,7 @@ class TopicMoveServiceTest {
         move()
     }
     @Test fun noPermissionNeverPosts(): Unit = failure(MoveFailure.Kind.DENIED) {
-        enqueue(topic(allowed = false)); move()
+        enqueue(topic(allowed = false)); enqueue("", 403); move()
     }
     @Test fun changedNodeRequiresNewConfirmation(): Unit = failure(MoveFailure.Kind.CHANGED) {
         enqueue(topic("other")); move()

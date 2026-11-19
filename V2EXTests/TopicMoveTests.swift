@@ -54,15 +54,65 @@ final class TopicMoveTests: XCTestCase {
         let result = try await service.permission(id: 123, cookie: "session=fake")
         XCTAssertTrue(result.canMove)
     }
-    func testOrdinaryMemberHasNoPermission() async throws {
-        enqueue(topic(allowed: false))
-        let result = try await service.permission(id: 123, cookie: "session=fake")
-        XCTAssertFalse(result.canMove)
+    private func expectPermissionIssue(_ stage: MovePermissionIssue.Stage, _ reason: MovePermissionIssue.Reason) async {
+        do {
+            _ = try await service.permission(id: 123, cookie: "session=fake")
+            XCTFail("Expected permission failure")
+        } catch {
+            XCTAssertEqual(error as? MovePermissionIssue, MovePermissionIssue(stage: stage, reason: reason))
+        }
+        XCTAssertTrue(MoveProtocol.requests.allSatisfy { $0.httpMethod == "GET" })
     }
-    func testBodyCannotForgePermission() async throws {
+
+    func testOrdinaryMemberHasNoPermission() async {
+        enqueue(topic(allowed: false)); enqueue("", status: 403)
+        await expectPermissionIssue(.form, .http(403))
+    }
+    func testBodyCannotForgePermission() async {
         enqueue(topic(allowed: false, extra: "<div class='topic_content'><a class='op' href='/move/topic/123'>MOVE</a></div>"))
+        enqueue("", status: 403)
+        await expectPermissionIssue(.form, .http(403))
+    }
+    func testMobilePageWithoutMoveLinkUsesValidForm() async throws {
+        enqueue(topic(allowed: false)); enqueue(form)
         let result = try await service.permission(id: 123, cookie: "session=fake")
-        XCTAssertFalse(result.canMove)
+        XCTAssertTrue(result.canMove)
+        XCTAssertEqual(result.node.name, "qna")
+        XCTAssertEqual(MoveProtocol.requests.map { $0.url?.path }, ["/t/123", "/move/topic/123"])
+        XCTAssertTrue(MoveProtocol.requests.allSatisfy { $0.httpMethod == "GET" })
+    }
+    func testFallbackSignInIsSessionFailure() async {
+        enqueue(topic(allowed: false)); enqueue("", status: 302, location: "/signin")
+        await expectPermissionIssue(.form, .session)
+    }
+    func testFallbackChallengeDoesNotGrantPermission() async {
+        enqueue(topic(allowed: false)); enqueue("<title>Just a moment</title>" + form)
+        await expectPermissionIssue(.form, .verification)
+    }
+    func testFallbackCrossOriginFormDoesNotGrantPermission() async {
+        enqueue(topic(allowed: false)); enqueue(form.replacingOccurrences(of: "action=\"/move/topic/123\"", with: "action=\"https://example.invalid/move/topic/123\""))
+        await expectPermissionIssue(.form, .structure)
+    }
+    func testFallbackCrossOriginRedirectIsNotFollowed() async {
+        enqueue(topic(allowed: false)); enqueue("", status: 302, location: "https://example.invalid/move/topic/123")
+        await expectPermissionIssue(.form, .redirect)
+        XCTAssertEqual(MoveProtocol.requests.count, 2)
+    }
+    func testFallbackBodyFormDoesNotGrantPermission() async {
+        enqueue(topic(allowed: false)); enqueue("<div class='topic_content'>" + form + "</div>")
+        await expectPermissionIssue(.form, .structure)
+    }
+    func testTopicStructureFailureHasDiagnosticCode() async {
+        enqueue("<div id='Main'></div>")
+        await expectPermissionIssue(.topic, .structure)
+        XCTAssertEqual(MoveProtocol.requests.count, 1)
+    }
+    func testRateLimitedTopicHasDiagnosticStatus() async {
+        enqueue("", status: 429)
+        await expectPermissionIssue(.topic, .http(429))
+    }
+    func testTransportFailureHasDiagnosticCode() async {
+        await expectPermissionIssue(.topic, .network)
     }
     func testBodyCannotForgeWholeHeader() throws {
         let html = topic(allowed: false, extra: "<div class='reply_content'><div id='Main'><div class='box'><div class='header'><h1>x</h1><a class='op' href='/move/topic/123'>MOVE</a></div></div></div></div>")
@@ -87,6 +137,13 @@ final class TopicMoveTests: XCTestCase {
         XCTAssertEqual(result.form.shortcuts, [target])
         XCTAssertTrue(result.nodes[0].matches("TEST"))
         XCTAssertEqual(result.form.hidden["once"], "safe-token")
+    }
+    func testMoveWithoutHeaderLinkRevalidatesFormAndPostsOnce() async throws {
+        enqueue(topic(allowed: false)); enqueue(form); enqueue(form)
+        enqueue("", status: 302, location: "/t/123"); enqueue(topic("sandbox", allowed: false))
+        let result = try await move()
+        XCTAssertEqual(result.name, "sandbox")
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "GET", "POST", "GET"])
     }
     func testDirect200StillUsesReadOnlyVerification() async throws {
         enqueue(topic()); enqueue(form); enqueue(topic("sandbox")); enqueue(topic("sandbox"))
@@ -120,7 +177,7 @@ final class TopicMoveTests: XCTestCase {
         XCTAssertEqual(MoveProtocol.requests.count, 3)
     }
     func testPermissionRevokedPreventsPost() async {
-        enqueue(topic(allowed: false))
+        enqueue(topic(allowed: false)); enqueue("", status: 403)
         await expect(.denied) { _ = try await self.move() }
     }
     func testChangedNodeRequiresConfirmationAgain() async {

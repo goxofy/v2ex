@@ -29,8 +29,16 @@ final class TopicMoveService {
 
     func permission(id: Int, cookie: String) async throws -> MoveTopic {
         try validate(id: id, cookie: cookie)
-        do { return try TopicMovePage(html: await get("/t/\(id)", cookie: cookie), base: base).topic(id: id) }
-        catch { throw safe(error) }
+        let page = try await permissionPage("/t/\(id)", cookie: cookie, stage: .topic)
+        let topic: MoveTopic
+        do { topic = try page.topic(id: id) }
+        catch { throw permissionIssue(error, stage: .topic) }
+        if topic.canMove { return topic }
+        // Mobile pages may omit the desktop MOVE link. Only a valid server-owned form can replace that evidence.
+        let formPage = try await permissionPage("/move/topic/\(id)", cookie: cookie, stage: .form)
+        do { _ = try formPage.form(id: id) }
+        catch { throw permissionIssue(error, stage: .form) }
+        return MoveTopic(node: topic.node, canMove: true)
     }
 
     func prepare(id: Int, cookie: String) async throws -> MovePreparation {
@@ -108,6 +116,7 @@ final class TopicMoveService {
             throw MoveFailure.unconfirmed
         } catch {
             if error.isCancellation { throw error }
+            if let issue = error as? MovePermissionIssue { throw issue.operationFailure }
             throw (error as? MoveFailure) ?? (submitted ? MoveFailure.unconfirmed : MoveFailure.unavailable)
         }
     }
@@ -130,10 +139,37 @@ final class TopicMoveService {
     }
 
     private func safe(_ error: Error) -> Error {
-        error.isCancellation ? error : (error as? MoveFailure) ?? MoveFailure.unavailable
+        if error.isCancellation { return error }
+        if let issue = error as? MovePermissionIssue { return issue.operationFailure }
+        return (error as? MoveFailure) ?? MoveFailure.unavailable
     }
 
-    private func get(_ path: String, cookie: String, timeout: TimeInterval = 15) async throws -> String {
+    private func permissionPage(_ path: String, cookie: String, stage: MovePermissionIssue.Stage) async throws -> TopicMovePage {
+        do {
+            let html = try await get(path, cookie: cookie, diagnosticStage: stage)
+            let page = TopicMovePage(html: html, base: base)
+            if page.requiresVerification { throw MovePermissionIssue(stage: stage, reason: .verification) }
+            return page
+        } catch {
+            if error.isCancellation { throw error }
+            if let issue = error as? MovePermissionIssue { throw issue }
+            if let failure = error as? MoveFailure { throw permissionIssue(failure, stage: stage) }
+            throw MovePermissionIssue(stage: stage, reason: .network)
+        }
+    }
+
+    private func permissionIssue(_ error: Error, stage: MovePermissionIssue.Stage) -> MovePermissionIssue {
+        let reason: MovePermissionIssue.Reason
+        switch error as? MoveFailure {
+        case .session: reason = .session
+        case .rejected: reason = .rejected
+        default: reason = .structure
+        }
+        return MovePermissionIssue(stage: stage, reason: reason)
+    }
+
+    private func get(_ path: String, cookie: String, timeout: TimeInterval = 15,
+                     diagnosticStage: MovePermissionIssue.Stage? = nil) async throws -> String {
         var request = try request(path, cookie: cookie)
         request.timeoutInterval = timeout
         let expected = request.url!.path
@@ -144,14 +180,24 @@ final class TopicMoveService {
                 guard let html = String(data: data, encoding: .utf8) else { throw MoveFailure.unavailable }
                 return html
             }
+            if let stage = diagnosticStage, !(300..<400).contains(http.statusCode) {
+                throw MovePermissionIssue(stage: stage, reason: .http(http.statusCode))
+            }
             if [401, 403].contains(http.statusCode) { throw MoveFailure.denied }
             guard [301, 302, 303, 307, 308].contains(http.statusCode),
                   let location = http.value(forHTTPHeaderField: "Location"),
-                  let target = URL(string: location, relativeTo: request.url)?.absoluteURL else { throw MoveFailure.unavailable }
+                  let target = URL(string: location, relativeTo: request.url)?.absoluteURL else {
+                if let stage = diagnosticStage { throw MovePermissionIssue(stage: stage, reason: .redirect) }
+                throw MoveFailure.unavailable
+            }
             if ["/signin", "/2fa"].contains(target.path) { throw MoveFailure.session }
-            guard allowed(target, path: expected) else { throw MoveFailure.unavailable }
+            guard allowed(target, path: expected) else {
+                if let stage = diagnosticStage { throw MovePermissionIssue(stage: stage, reason: .redirect) }
+                throw MoveFailure.unavailable
+            }
             request.url = target
         }
+        if let stage = diagnosticStage { throw MovePermissionIssue(stage: stage, reason: .redirect) }
         throw MoveFailure.unavailable
     }
 

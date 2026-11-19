@@ -30,8 +30,8 @@ class TopicMoveRepositoryTest {
             { "{}" }, {}, scope, { clock },
         )
 
-        fun enqueue(allowed: Boolean = true, delayMillis: Long = 0): Unit {
-            val link = if (allowed) "<a class='op' href='/move/topic/123'>MOVE</a>" else ""
+        fun enqueue(allowed: Boolean = true, delayMillis: Long = 0, id: Long = 123): Unit {
+            val link = if (allowed) "<a class='op' href='/move/topic/$id'>MOVE</a>" else ""
             server.enqueue(MockResponse.Builder().body("""<div id="Main"><div class="box"><div class="header">
                 <a href="/go/qna">问与答</a><h1>Fixture</h1>$link</div></div></div>""")
                 .bodyDelay(delayMillis, TimeUnit.MILLISECONDS).build())
@@ -61,9 +61,12 @@ class TopicMoveRepositoryTest {
     @Test fun ordinaryAccountNeverGetsMoveEntry(): Unit = runBlocking {
         Fixture(this).use { f ->
             f.enqueue(allowed = false)
+            f.server.enqueue(MockResponse.Builder().code(403).build())
             val watch = launch { f.repository.watch(123) }
             try {
-                settle { f.repository.permissions.value.containsKey(123) }
+                settle { f.server.requestCount == 2 }
+                delay(50)
+                assertTrue(f.repository.permissions.value.isEmpty())
                 assertFalse(f.repository.allowed(123))
             } finally { watch.cancelAndJoin() }
         }
@@ -133,7 +136,14 @@ class TopicMoveRepositoryTest {
 
     @Test fun probesHaveAtMostTwoConcurrentRequests(): Unit = runBlocking {
         Fixture(this).use { f ->
-            repeat(3) { f.enqueue(delayMillis = 250) }
+            f.server.dispatcher = object : mockwebserver3.Dispatcher() {
+                override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+                    val id = request.url.encodedPath.substringAfterLast('/').toLong()
+                    return MockResponse.Builder().body("""<div id="Main"><div class="box"><div class="header">
+                        <a href="/go/qna">问与答</a><h1>Fixture</h1><a class="op" href="/move/topic/$id">MOVE</a>
+                        </div></div></div>""").bodyDelay(250, TimeUnit.MILLISECONDS).build()
+                }
+            }
             val watches = (123L..125L).map { id -> launch { f.repository.watch(id) } }
             try {
                 settle { f.server.requestCount >= 2 }

@@ -36,6 +36,50 @@ enum MoveFailure: Error, LocalizedError {
     }
 }
 
+/// Safe permission diagnostics: never carry response bodies, credentials or server error text.
+struct MovePermissionIssue: Error, Equatable {
+    enum Stage: String { case topic = "话题页", form = "移动表单" }
+    enum Reason: Equatable {
+        case session, network, http(Int), redirect, verification, structure, rejected
+    }
+    let stage: Stage
+    let reason: Reason
+
+    var code: String {
+        let prefix = stage == .topic ? "TOPIC" : "FORM"
+        switch reason {
+        case .session: return "\(prefix)_SESSION"
+        case .network: return "\(prefix)_NETWORK"
+        case .http(let status): return "\(prefix)_HTTP_\(status)"
+        case .redirect: return "\(prefix)_REDIRECT"
+        case .verification: return "\(prefix)_VERIFICATION"
+        case .structure: return "\(prefix)_STRUCTURE"
+        case .rejected: return "\(prefix)_REJECTED"
+        }
+    }
+
+    var message: String {
+        switch reason {
+        case .session: return "网页会话失效或尚未完成登录，请在 App 内重新登录。"
+        case .network: return "网页请求失败或超时，尚未确认权限。"
+        case .http(let status): return "网页返回 HTTP \(status)，尚未确认权限；可能是访问限制或服务异常。"
+        case .redirect: return "网页返回了不允许的跳转，未继续发送会话。"
+        case .verification: return "网页要求验证，尚未确认权限。"
+        case .structure: return "未识别出可信的\(stage.rawValue)结构，不能据此判断你没有权限。"
+        case .rejected: return "网页返回了错误提示，未获得有效权限证据。"
+        }
+    }
+
+    var operationFailure: MoveFailure {
+        switch reason {
+        case .session: return .session
+        case .http(let status) where status == 401 || status == 403: return .denied
+        case .rejected: return .rejected
+        default: return .unavailable
+        }
+    }
+}
+
 /// A deliberately small, fail-closed tree for site-owned controls, never a general HTML renderer.
 struct TopicMovePage {
     private let root: MoveElement
@@ -107,8 +151,13 @@ struct TopicMovePage {
             throw MoveFailure.session
         }
         if all.contains(where: { $0.hasClass("problem") || $0.attributes["id"] == "problem" }) { throw MoveFailure.rejected }
+        if requiresVerification { throw MoveFailure.unavailable }
+    }
+
+    var requiresVerification: Bool {
         let title = root.descendants("title").first?.text.lowercased() ?? ""
-        if title.contains("just a moment") || title.contains("attention required") { throw MoveFailure.unavailable }
+        return title.contains("just a moment") || title.contains("attention required") ||
+            root.descendants().contains { $0.attributes["id"] == "challenge-form" }
     }
 
     static func validSlug(_ value: String) -> Bool {

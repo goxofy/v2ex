@@ -21,6 +21,7 @@ Gradle Wrapper 脚本已有的版权/Apache-2.0 声明仍保留；Wrapper 的许
 - 新增基于 MockWebServer 5.5.0 的回帖回归测试，覆盖真实本机 HTTP 请求、延迟/超时确认、重定向、禁止重复 POST、分页、取消和页面误判防护；不使用真实账号发帖。复杂富文本无法可靠匹配时保守返回待确认，不通过删除 Markdown 符号或 URL 子串比较来判定成功。
 - 新增管理员移动主题：`TopicMovePage` / `TopicMoveService` 校验可信管理链接及真实表单，单次确认最多一个 POST，随后只读核查节点；`TopicMoveRepository` 按网页会话与话题缓存权限，账号变更和过期响应不会恢复旧权限。列表、搜索和详情共用原生移动面板，支持常用节点、别名搜索和备注。
 - 已确认节点以本地元信息覆盖旧 API、预览和离线快照的节点显示，原节点列表过滤已移出的条目；未重写或删除收藏与离线正文。管理权限不落盘。新增移动协议及仓库状态单测，使用人工页面与本机 HTTP，不执行真实管理操作。
+- 手机话题页缺少 MOVE 链接时，通过只读 GET 获取并严格验证同源、同话题的移动表单作为权限证据；无效表单、登录跳转、验证页和跨源响应均不能授予入口。原有每次操作最多一次 POST 的约束不变。
 - `gradle/wrapper/gradle-wrapper.properties` 增加官方 Gradle 9.7.1 分发包 SHA-256 校验；导入时 Wrapper JAR SHA-256 也已与 Gradle 官方发布值核对。
 - README 增加本仓构建说明入口；补充 Wrapper 许可证文本。
 - 根 `.gitignore` 增加 Android 签名密钥保护。
