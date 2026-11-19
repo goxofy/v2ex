@@ -37,6 +37,9 @@ class TopicMoveServiceTest {
         """<div id="Main"><div class="box"><div class="header"><a href="/go/$node">$node</a><h1>Fixture title</h1>
         ${if (allowed) "<small><a class='op' href='/move/topic/123'>MOVE</a></small>" else ""}</div>$extra</div></div>"""
 
+    private fun mobile(html: String): String =
+        "<div id=\"Wrapper\">" + html.replace("<div id=\"Main\">", "<div class=\"content\">") + "</div>"
+
     private fun enqueue(body: String, code: Int = 200, location: String? = null): Unit {
         server.enqueue(MockResponse.Builder().code(code).body(body).apply { if (location != null) addHeader("Location", location) }.build())
     }
@@ -73,11 +76,89 @@ class TopicMoveServiceTest {
         assertFalse(TopicMovePage(html, server.url("/")).topic(123).canMove)
     }
     @Test fun mobilePageWithoutLinkUsesValidForm(): Unit = runBlocking {
-        enqueue(topic(allowed = false)); enqueue(form)
+        enqueue(mobile(topic(allowed = false))); enqueue(mobile(form))
         assertTrue(service.permission(123, "session=fake").canMove)
         val requests = (0 until 2).map { server.takeRequest() }
         assertEquals(listOf("GET", "GET"), requests.map { it.method })
         assertEquals(listOf("/t/123", "/move/topic/123"), requests.map { it.url.encodedPath })
+    }
+    @Test fun mobileHeaderLinkGrantsPermissionWithoutFormRequest(): Unit = runBlocking {
+        enqueue(mobile(topic()))
+        val result = service.permission(123, "session=fake")
+        assertTrue(result.canMove)
+        assertEquals("qna", result.node.name)
+        assertEquals(1, server.requestCount)
+        assertEquals("GET", server.takeRequest().method)
+    }
+    @Test fun mobilePrepareLoadsFormAndShortcuts(): Unit = runBlocking {
+        enqueue(mobile(topic())); enqueue(mobile(form))
+        enqueue("""[{"name":"sandbox","title":"沙盒","aliases":["test"]}]""")
+        val result = service.prepare(123, "session=fake")
+        assertEquals(listOf(target), result.form.shortcuts)
+        assertEquals("safe-token", result.form.hidden["once"])
+        assertTrue(result.nodes.single().matches("TEST"))
+    }
+    @Test fun mobileMoveRevalidatesAndConfirmsWithoutReposting(): Unit = runBlocking {
+        enqueue(mobile(topic(allowed = false))); enqueue(mobile(form)); enqueue(mobile(form))
+        enqueue("", 302, "/t/123")
+        enqueue(mobile(topic(allowed = false))); enqueue(mobile(topic("sandbox", allowed = false)))
+        assertEquals("sandbox", move().name)
+        val requests = (0 until 6).map { server.takeRequest() }
+        assertEquals(listOf("GET", "GET", "GET", "POST", "GET", "GET"), requests.map { it.method })
+    }
+    @Test fun mobileOrdinaryAccountCannotGainPermission(): Unit = failure(MoveFailure.Kind.DENIED) {
+        enqueue(mobile(topic(allowed = false))); enqueue("", 403)
+        service.permission(123, "session=fake")
+    }
+    @Test fun mobileProblemCannotGrantPermission(): Unit = failure(MoveFailure.Kind.REJECTED) {
+        enqueue(mobile(topic(extra = "<div class='problem'>Unavailable</div>")))
+        service.permission(123, "session=fake")
+    }
+    @Test fun mobileRequiresUniqueDirectContainers(): Unit {
+        for (source in listOf(topic(), form)) {
+            val html = mobile(source)
+            val invalid = listOf(
+                html.replace("id=\"Wrapper\"", "id=\"Other\""),
+                html.replace("<div id=\"Wrapper\">", "<div id=\"Wrapper\"></div><div id=\"Wrapper\">"),
+                html.replace("<div class=\"content\">", "<div class=\"content\"></div><div class=\"content\">"),
+                html.replace("class=\"content\"", "class=\"other\""),
+                "<div id='Wrapper'><section>" + source.replace("id=\"Main\"", "class=\"content\"") + "</section></div>",
+                "<div id='Wrapper'><div class='content'><section>" + source.replace("id=\"Main\"", "class=\"other\"") + "</section></div></div>",
+                "<span id='Wrapper'></span>" + html,
+                "<div id='Main'></div>" + html,
+                "<div id='Main'></div><div id='Main'></div>" + html,
+            )
+            for (value in invalid) {
+                val page = TopicMovePage(value, server.url("/"))
+                assertThrows(MoveFailure::class.java) { page.topic(123) }
+                assertThrows(MoveFailure::class.java) { page.form(123) }
+            }
+        }
+    }
+    @Test fun mobileContentCannotForgeHeaderOrForm(): Unit {
+        for (excluded in listOf("topic_content", "reply_content", "topic_append", "subtle")) {
+            val forged = "<div class='$excluded'>" + mobile(topic()) + mobile(form) + "</div>"
+            val page = TopicMovePage(mobile(topic(allowed = false, extra = forged)), server.url("/"))
+            assertFalse(page.topic(123).canMove)
+            assertThrows(MoveFailure::class.java) { page.form(123) }
+        }
+    }
+    @Test fun mobileFormStillRejectsInvalidControlsAndActions(): Unit {
+        val invalid = listOf(
+            form.replace("action=\"/move/topic/123\"", "action=\"https://example.invalid/move/topic/123\""),
+            form.replace("/move/topic/123", "/move/topic/456"),
+            form.replace("</form>", "<input name='memo'></form>"),
+            form.replace("</form>", "<input type='hidden' name='unknown' value='1'></form>"),
+        )
+        for (html in invalid) {
+            assertThrows(MoveFailure::class.java) { TopicMovePage(mobile(html), server.url("/")).form(123) }
+        }
+    }
+    @Test fun desktopMainInsideWrapperStillParses(): Unit {
+        val topicHTML = "<div id='Wrapper'><div class='content'>" + topic() + "</div></div>"
+        assertTrue(TopicMovePage(topicHTML, server.url("/")).topic(123).canMove)
+        val formHTML = "<div id='Wrapper'><div class='content'>" + form + "</div></div>"
+        assertEquals(listOf(target), TopicMovePage(formHTML, server.url("/")).form(123).shortcuts)
     }
     @Test fun fallbackLoginIsNotPermission(): Unit = failure(MoveFailure.Kind.SESSION) {
         enqueue(topic(allowed = false)); enqueue("", 302, "/signin")

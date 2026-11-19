@@ -35,6 +35,10 @@ final class TopicMoveTests: XCTestCase {
         """
     }
 
+    private func mobile(_ html: String) -> String {
+        "<div id=\"Wrapper\">" + html.replacingOccurrences(of: "<div id=\"Main\">", with: "<div class=\"content\">") + "</div>"
+    }
+
     private func enqueue(_ html: String, status: Int = 200, location: String? = nil) {
         MoveProtocol.responses.append((status, html, location))
     }
@@ -74,12 +78,89 @@ final class TopicMoveTests: XCTestCase {
         await expectPermissionIssue(.form, .http(403))
     }
     func testMobilePageWithoutMoveLinkUsesValidForm() async throws {
-        enqueue(topic(allowed: false)); enqueue(form)
+        enqueue(mobile(topic(allowed: false))); enqueue(mobile(form))
         let result = try await service.permission(id: 123, cookie: "session=fake")
         XCTAssertTrue(result.canMove)
         XCTAssertEqual(result.node.name, "qna")
         XCTAssertEqual(MoveProtocol.requests.map { $0.url?.path }, ["/t/123", "/move/topic/123"])
         XCTAssertTrue(MoveProtocol.requests.allSatisfy { $0.httpMethod == "GET" })
+    }
+    func testMobileHeaderLinkGrantsPermissionWithoutFormRequest() async throws -> Void {
+        enqueue(mobile(topic()))
+        let result = try await service.permission(id: 123, cookie: "session=fake")
+        XCTAssertTrue(result.canMove)
+        XCTAssertEqual(result.node.name, "qna")
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET"])
+    }
+    func testMobilePrepareLoadsFormAndShortcuts() async throws -> Void {
+        enqueue(mobile(topic())); enqueue(mobile(form))
+        enqueue(#"[{"name":"sandbox","title":"沙盒","aliases":["test"]}]"#)
+        let result = try await service.prepare(id: 123, cookie: "session=fake")
+        XCTAssertEqual(result.form.shortcuts, [target])
+        XCTAssertEqual(result.form.hidden["once"], "safe-token")
+        XCTAssertTrue(result.nodes[0].matches("TEST"))
+    }
+    func testMobileMoveRevalidatesAndConfirmsWithoutReposting() async throws -> Void {
+        enqueue(mobile(topic(allowed: false))); enqueue(mobile(form)); enqueue(mobile(form))
+        enqueue("", status: 302, location: "/t/123")
+        enqueue(mobile(topic(allowed: false))); enqueue(mobile(topic("sandbox", allowed: false)))
+        let result = try await move()
+        XCTAssertEqual(result.name, "sandbox")
+        XCTAssertEqual(MoveProtocol.requests.map(\.httpMethod), ["GET", "GET", "GET", "POST", "GET", "GET"])
+    }
+    func testMobileOrdinaryAccountCannotGainPermission() async -> Void {
+        enqueue(mobile(topic(allowed: false))); enqueue("", status: 403)
+        await expectPermissionIssue(.form, .http(403))
+    }
+    func testMobileProblemCannotGrantPermission() async -> Void {
+        enqueue(mobile(topic(extra: "<div class='problem'>Unavailable</div>")))
+        await expectPermissionIssue(.topic, .rejected)
+    }
+    func testMobileRequiresUniqueDirectContainers() throws -> Void {
+        for source in [topic(), form] {
+            let html = mobile(source)
+            let invalid = [
+                html.replacingOccurrences(of: "id=\"Wrapper\"", with: "id=\"Other\""),
+                html.replacingOccurrences(of: "<div id=\"Wrapper\">", with: "<div id=\"Wrapper\"></div><div id=\"Wrapper\">"),
+                html.replacingOccurrences(of: "<div class=\"content\">", with: "<div class=\"content\"></div><div class=\"content\">"),
+                html.replacingOccurrences(of: "class=\"content\"", with: "class=\"other\""),
+                "<div id='Wrapper'><section>" + source.replacingOccurrences(of: "id=\"Main\"", with: "class=\"content\"") + "</section></div>",
+                "<div id='Wrapper'><div class='content'><section>" + source.replacingOccurrences(of: "id=\"Main\"", with: "class=\"other\"") + "</section></div></div>",
+                "<span id='Wrapper'></span>" + html,
+                "<div id='Main'></div>" + html,
+                "<div id='Main'></div><div id='Main'></div>" + html,
+            ]
+            for value in invalid {
+                let page = TopicMovePage(html: value, base: base)
+                XCTAssertThrowsError(try page.topic(id: 123))
+                XCTAssertThrowsError(try page.form(id: 123))
+            }
+        }
+    }
+    func testMobileContentCannotForgeHeaderOrForm() throws -> Void {
+        for excluded in ["topic_content", "reply_content", "topic_append", "subtle"] {
+            let forged = "<div class='\(excluded)'>" + mobile(topic()) + mobile(form) + "</div>"
+            let page = TopicMovePage(html: mobile(topic(allowed: false, extra: forged)), base: base)
+            XCTAssertFalse(try page.topic(id: 123).canMove)
+            XCTAssertThrowsError(try page.form(id: 123))
+        }
+    }
+    func testMobileFormStillRejectsInvalidControlsAndActions() throws -> Void {
+        let invalid = [
+            form.replacingOccurrences(of: "action=\"/move/topic/123\"", with: "action=\"https://example.invalid/move/topic/123\""),
+            form.replacingOccurrences(of: "/move/topic/123", with: "/move/topic/456"),
+            form.replacingOccurrences(of: "</form>", with: "<input name='memo'></form>"),
+            form.replacingOccurrences(of: "</form>", with: "<input type='hidden' name='unknown' value='1'></form>"),
+        ]
+        for html in invalid {
+            XCTAssertThrowsError(try TopicMovePage(html: mobile(html), base: base).form(id: 123))
+        }
+    }
+    func testDesktopMainInsideWrapperStillParses() throws -> Void {
+        let topicHTML = "<div id='Wrapper'><div class='content'>" + topic() + "</div></div>"
+        XCTAssertTrue(try TopicMovePage(html: topicHTML, base: base).topic(id: 123).canMove)
+        let formHTML = "<div id='Wrapper'><div class='content'>" + form + "</div></div>"
+        XCTAssertEqual(try TopicMovePage(html: formHTML, base: base).form(id: 123).shortcuts, [target])
     }
     func testFallbackSignInIsSessionFailure() async {
         enqueue(topic(allowed: false)); enqueue("", status: 302, location: "/signin")

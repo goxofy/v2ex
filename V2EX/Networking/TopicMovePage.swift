@@ -166,8 +166,19 @@ struct TopicMovePage {
 
     private var mainBoxes: [MoveElement] {
         let mains = root.descendants().filter { $0.attributes["id"] == "Main" }
-        guard mains.count == 1 else { return [] }
-        return mains[0].children.filter { $0.tag == "div" && $0.hasClass("box") }
+        let container: MoveElement
+        if !mains.isEmpty {
+            guard mains.count == 1 else { return [] }
+            container = mains[0]
+        } else {
+            // The mobile layout omits Main; only accept the site's exact Wrapper > content boundary.
+            let wrappers = root.descendants().filter { $0.attributes["id"] == "Wrapper" }
+            guard wrappers.count == 1, wrappers[0].tag == "div" else { return [] }
+            let contents = wrappers[0].children.filter { $0.tag == "div" && $0.hasClass("content") }
+            guard contents.count == 1 else { return [] }
+            container = contents[0]
+        }
+        return container.children.filter { $0.tag == "div" && $0.hasClass("box") }
     }
 
     private func resolved(_ href: String?) -> URL? {
