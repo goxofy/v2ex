@@ -247,6 +247,8 @@ private final class MoveElement {
             for attr in attrs.matches(in: raw as String, range: NSRange(location: 0, length: raw.length)) {
                 guard let value = (2...4).first(where: { attr.range(at: $0).location != NSNotFound }) else { continue }
                 let key = raw.substring(with: attr.range(at: 1)).lowercased()
+                // Rendered links may repeat target; browsing context is not permission evidence.
+                if tag == "a", key == "target" { continue }
                 if values[key] != nil { return MoveElement(tag: "invalid") }
                 values[key] = HTMLText.decode(raw.substring(with: attr.range(at: value)))
             }

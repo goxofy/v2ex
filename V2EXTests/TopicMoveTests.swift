@@ -85,6 +85,47 @@ final class TopicMoveTests: XCTestCase {
         XCTAssertEqual(MoveProtocol.requests.map { $0.url?.path }, ["/t/123", "/move/topic/123"])
         XCTAssertTrue(MoveProtocol.requests.allSatisfy { $0.httpMethod == "GET" })
     }
+    func testRepeatedLinkTargetsDoNotInvalidateTopicStructure() throws -> Void {
+        for excluded in ["topic_content", "reply_content", "topic_append", "subtle"] {
+            let extra = "<div class='\(excluded)'><a href='https://example.com/' target='_blank' TARGET='_blank'>Link</a></div>"
+            for html in [topic(extra: extra), mobile(topic(extra: extra))] {
+                let result = try TopicMovePage(html: html, base: base).topic(id: 123)
+                XCTAssertEqual(result.node.name, "qna")
+                XCTAssertTrue(result.canMove)
+            }
+        }
+    }
+    func testRepeatedLinkTargetsStillAllowStrictFormFallback() async throws -> Void {
+        let extra = "<div class='reply_content'><a href='https://example.com/' target='_blank' target='_blank'>Link</a></div>"
+        enqueue(mobile(topic(allowed: false, extra: extra))); enqueue(mobile(form))
+        let result = try await service.permission(id: 123, cookie: "session=fake")
+        XCTAssertTrue(result.canMove)
+        XCTAssertEqual(MoveProtocol.requests.map { $0.url?.path }, ["/t/123", "/move/topic/123"])
+        XCTAssertTrue(MoveProtocol.requests.allSatisfy { $0.httpMethod == "GET" })
+    }
+    func testRepeatedLinkTargetsCannotGrantPermission() async -> Void {
+        let extra = "<div class='reply_content'><a class='op' href='/move/topic/123' target='_blank' target='_blank'>MOVE</a></div>"
+        enqueue(mobile(topic(allowed: false, extra: extra))); enqueue("", status: 403)
+        await expectPermissionIssue(.form, .http(403))
+    }
+    func testRepeatedSecurityAttributesStillFailClosed() throws -> Void {
+        for (original, duplicate) in [
+            ("href='/move/topic/123'", "href='/move/topic/123' href='/move/topic/456'"),
+            ("class='op'", "class='op' class='other'"),
+            ("id=\"Main\"", "id=\"Main\" id=\"Other\"")
+        ] {
+            let html = topic().replacingOccurrences(of: original, with: duplicate)
+            XCTAssertThrowsError(try TopicMovePage(html: html, base: base).topic(id: 123))
+        }
+        for (original, duplicate) in [
+            ("method=\"post\"", "method=\"post\" method=\"get\""),
+            ("action=\"/move/topic/123\"", "action=\"/move/topic/123\" action=\"/move/topic/456\""),
+            ("name=\"memo\"", "name=\"memo\" name=\"destination\"")
+        ] {
+            let html = form.replacingOccurrences(of: original, with: duplicate)
+            XCTAssertThrowsError(try TopicMovePage(html: html, base: base).form(id: 123))
+        }
+    }
     func testMobileHeaderLinkGrantsPermissionWithoutFormRequest() async throws -> Void {
         enqueue(mobile(topic()))
         let result = try await service.permission(id: 123, cookie: "session=fake")
