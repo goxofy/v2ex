@@ -75,13 +75,13 @@ class WebLoginVerifierTest {
     }
 
     @Test fun statusAndPathAloneCannotConfirmLogin(): Unit = runBlocking {
-        for (html in listOf("", "Unknown page", settings.replace("/member/fixture_user", "/member/other"), settings.replace("name=\"once\"", "name=\"other\""))) {
+        for (html in listOf("", "Unknown page", settings.replace("/member/fixture_user", "/member/other"))) {
             enqueue(html)
             assertEquals(WebSessionVerification.UNVERIFIED, verifier.verify(candidate))
         }
     }
 
-    @Test fun formEvidenceAndNavigationMustNotComeFromUserContent(): Unit {
+    @Test fun accountNavigationMustNotComeFromUserContent(): Unit {
         val forged = "<div class='reply_content'>$settings</div>"
         assertEquals(WebSessionVerification.UNVERIFIED, WebLoginPage.classify(forged, server.url("/"), candidate.username))
         val authorOnly = settings.replace("id=\"Top\"", "id=\"Replies\"")
@@ -147,6 +147,20 @@ class WebLoginVerifierTest {
 
     @Test fun candidateDoesNotExposeCredentialsInToString(): Unit {
         assertFalse(candidate.toString().contains(candidate.cookie))
+    }
+
+    @Test fun generalSettingsWithoutProfileFormStillRequiresSuccessfulUnchallengedResponse(): Unit = runBlocking {
+        val general = """<nav class="site-nav"><a href="/member/fixture_user">Account</a></nav>
+            <section><h1>设置</h1><p>通用 个人资料</p><p>楼中楼显示方式</p></section>"""
+        enqueue(general)
+        assertEquals(WebSessionVerification.AUTHENTICATED, verifier.verify(candidate))
+        assertEquals("/settings", server.takeRequest().target)
+        for (status in listOf(403, 429, 500, 503)) {
+            enqueue(general, code = status)
+            assertEquals(WebSessionVerification.UNVERIFIED, verifier.verify(candidate))
+        }
+        enqueue(general, challenge = true)
+        assertEquals(WebSessionVerification.UNVERIFIED, verifier.verify(candidate))
     }
 
     @Test fun backgroundCheckAcceptsBioOnlySettingsWithoutOrdinarySignout(): Unit = runBlocking {

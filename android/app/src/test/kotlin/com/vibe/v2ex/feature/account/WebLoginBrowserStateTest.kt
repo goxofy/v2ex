@@ -4,19 +4,38 @@ import com.vibe.v2ex.data.remote.BrowserLoginEvidence
 import com.vibe.v2ex.data.remote.BrowserLoginReason
 import com.vibe.v2ex.data.remote.VerifiedBrowserLogin
 import com.vibe.v2ex.data.remote.WebLoginPage
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.*
 import org.junit.Test
 
 class WebLoginBrowserStateTest {
     private val settingsUrl = "${WebLoginPage.BASE}/settings"
-    private val evidence = BrowserLoginEvidence(1, "/settings", false, false, listOf("fixture_user"), 1, 1)
+    private val evidence = BrowserLoginEvidence(1, "/settings", false, false, listOf("fixture_user"))
+
+    @Test fun generalTabWithoutProfileFormCompletesBrowserConfirmation(): Unit {
+        val state = WebLoginBrowserState()
+        state.initialize { }
+        assertEquals(BrowserLoginAction.OpenSettings, state.inspect(evidence.copy(path = "/"), WebLoginPage.BASE))
+        val token = state.navigated()
+        val general = BrowserLoginEvidence.fromHtml(
+            """<nav class="site-nav"><a href="/member/fixture_user">Account</a></nav>
+                <section><h1>设置</h1><p>通用 个人资料</p><p>楼中楼显示方式</p></section>""",
+            settingsUrl.toHttpUrl(),
+        )
+        assertEquals(BrowserLoginAction.Confirm("fixture_user"), state.inspect(general, settingsUrl))
+        val proof = VerifiedBrowserLogin.confirm(general, "fixture_user", settingsUrl, "latest-cookie", "WebView UA") { state.accepts(token) }
+        assertNotNull(proof)
+        assertEquals("latest-cookie", proof!!.session.cookie)
+        state.release()
+        assertFalse(proof.session.isCurrent())
+    }
 
     @Test fun automaticSettingsNavigationHappensOnlyOnceBeforeProof(): Unit {
         val state = WebLoginBrowserState()
         state.initialize { }
         assertEquals(BrowserLoginAction.OpenSettings, state.inspect(evidence.copy(path = "/"), WebLoginPage.BASE))
         repeat(3) {
-            assertEquals(BrowserLoginAction.Wait(BrowserLoginReason.STRUCTURE), state.inspect(evidence.copy(path = "/"), WebLoginPage.BASE))
+            assertEquals(BrowserLoginAction.Wait(BrowserLoginReason.SETTINGS_PAGE), state.inspect(evidence.copy(path = "/"), WebLoginPage.BASE))
         }
         state.navigated()
         assertEquals(BrowserLoginAction.Confirm("fixture_user"), state.inspect(evidence, settingsUrl))
@@ -30,13 +49,13 @@ class WebLoginBrowserStateTest {
         assertEquals(BrowserLoginAction.Confirm("fixture_user"), state.inspect(evidence, settingsUrl))
     }
 
-    @Test fun unknownSettingsDoesNotLoopAndManualRefreshTargetsSettings(): Unit {
+    @Test fun nonSettingsPageDoesNotLoopAndManualRefreshTargetsSettings(): Unit {
         val state = WebLoginBrowserState()
         state.initialize { }
         state.inspect(evidence.copy(path = "/"), WebLoginPage.BASE)
         state.navigated()
         repeat(5) {
-            assertEquals(BrowserLoginAction.Wait(BrowserLoginReason.STRUCTURE), state.inspect(evidence.copy(settingsForms = 0), settingsUrl))
+            assertEquals(BrowserLoginAction.Wait(BrowserLoginReason.SETTINGS_PAGE), state.inspect(evidence.copy(path = "/"), WebLoginPage.BASE))
         }
         assertEquals(settingsUrl, state.refreshUrl("${WebLoginPage.BASE}/"))
     }

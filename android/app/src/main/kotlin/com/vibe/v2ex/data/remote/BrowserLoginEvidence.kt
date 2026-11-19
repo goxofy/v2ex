@@ -5,7 +5,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
 import org.jsoup.Jsoup
 
-/** Only structural evidence crosses the WebView boundary, never input values or page HTML. */
+/** Page identity and explicit login/challenge markers only; no settings-layout assumptions. */
 @Serializable
 internal data class BrowserLoginEvidence(
     val version: Int,
@@ -13,37 +13,33 @@ internal data class BrowserLoginEvidence(
     val challenge: Boolean,
     val loginForm: Boolean,
     val names: List<String>,
-    val mainCount: Int,
-    val settingsForms: Int,
 ) {
     fun reason(expectedUsername: String): BrowserLoginReason = when {
-        version != 1 -> BrowserLoginReason.STRUCTURE
+        version != 1 -> BrowserLoginReason.SETTINGS_PAGE
         challenge -> BrowserLoginReason.CHALLENGE
         loginForm || path in listOf("/signin", "/2fa") -> BrowserLoginReason.LOGIN_REQUIRED
         names.size != 1 || !WebLoginPage.validUsername(names.single()) -> BrowserLoginReason.ACCOUNT_NAVIGATION
         names.single() != expectedUsername -> BrowserLoginReason.ACCOUNT_MISMATCH
-        path != "/settings" || mainCount != 1 || settingsForms < 1 -> BrowserLoginReason.STRUCTURE
+        path != "/settings" -> BrowserLoginReason.SETTINGS_PAGE
         else -> BrowserLoginReason.VERIFIED
     }
 
     companion object {
         private const val EXCLUDED = "script,style,template,noscript,.topic_content,.reply_content,.topic_append"
-        private const val EDIT_FIELDS = "input[name=website],input[name=location],textarea[name=bio]"
 
         fun fromJavascript(raw: String?): BrowserLoginEvidence? = runCatching {
             if (raw == null || raw.length > 16_384) return null
             val json = Json.decodeFromString<String>(raw)
             Json.decodeFromString<BrowserLoginEvidence>(json).takeIf {
                 it.version == 1 && it.names.size <= 8 && it.names.all(WebLoginPage::validUsername) &&
-                    it.mainCount in 0..100 && it.settingsForms in 0..100 &&
                     it.path in listOf("/", "/settings", "/signin", "/2fa", "other")
             }
         }.getOrNull()
 
+        /** The caller has already checked the HTTP response and final settings URL. */
         fun fromHtml(html: String, base: HttpUrl): BrowserLoginEvidence {
             val document = Jsoup.parse(html, base.toString())
             document.select(EXCLUDED).remove()
-            // Keep textarea controls as structure; their contents are not identity evidence.
             document.select("textarea").empty()
             fun local(value: String): HttpUrl? = base.resolve(value)?.takeIf {
                 it.sameOrigin(base) && it.username.isEmpty() && it.password.isEmpty()
@@ -54,13 +50,6 @@ internal data class BrowserLoginEvidence(
                     url.encodedPath == "/member/$name" && WebLoginPage.validUsername(name)
                 }
             }.distinct()
-            val mains = document.select("#Main").ifEmpty { document.select("#Wrapper > .content") }
-            val settingsForms = mains.singleOrNull()?.select("form")?.count {
-                val action = local(it.attr("action").ifBlank { "/settings" })
-                action?.encodedPath == "/settings" && action.query == null && action.fragment == null &&
-                    it.attr("method").equals("post", true) && it.select("input[name=once]").size == 1 &&
-                    it.select(EDIT_FIELDS).isNotEmpty()
-            } ?: 0
             return BrowserLoginEvidence(
                 version = 1,
                 path = "/settings",
@@ -68,8 +57,6 @@ internal data class BrowserLoginEvidence(
                     document.title().contains("attention required", true) || document.select("#challenge-form").isNotEmpty(),
                 loginForm = document.select("form[action]").any { local(it.attr("action"))?.encodedPath in listOf("/signin", "/2fa") },
                 names = names,
-                mainCount = mains.size,
-                settingsForms = settingsForms,
             )
         }
 
@@ -96,18 +83,9 @@ internal data class BrowserLoginEvidence(
                 var url = local(form.getAttribute('action'));
                 return url && (url.pathname === '/signin' || url.pathname === '/2fa');
               });
-              var mains = doc.querySelectorAll('#Main');
-              if (!mains.length) mains = doc.querySelectorAll('#Wrapper > .content');
-              var settingsForms = mains.length === 1 ? Array.from(mains[0].querySelectorAll('form')).filter(function(form) {
-                var url = local(form.getAttribute('action') || location.pathname);
-                return url && url.pathname === '/settings' && !url.search && !url.hash &&
-                  (form.getAttribute('method') || '').toLowerCase() === 'post' &&
-                  form.querySelectorAll('input[name=once]').length === 1 && !!form.querySelector('$EDIT_FIELDS');
-              }).length : 0;
               return JSON.stringify({version: 1,
                 path: ['/', '/settings', '/signin', '/2fa'].indexOf(location.pathname) >= 0 ? location.pathname : 'other',
-                challenge: challenge, loginForm: loginForm, names: names,
-                mainCount: mains.length, settingsForms: settingsForms});
+                challenge: challenge, loginForm: loginForm, names: names});
             })()
         """.trimIndent()
     }
@@ -119,7 +97,7 @@ internal enum class BrowserLoginReason(val message: String) {
     LOGIN_REQUIRED("请继续完成网页登录或两步验证。[LOGIN_REQUIRED]"),
     ACCOUNT_NAVIGATION("未识别到唯一的当前账号导航，请刷新重试。[ACCOUNT_NAVIGATION]"),
     ACCOUNT_MISMATCH("确认期间网页账号发生变化，请关闭登录页后重新打开。[ACCOUNT_CHANGED]"),
-    STRUCTURE("设置页结构未能确认，请刷新重试；仍失败时请反馈此提示。[SETTINGS_STRUCTURE]"),
+    SETTINGS_PAGE("尚未到达设置页，请刷新重新确认。[SETTINGS_PAGE]"),
 }
 
 /** Cannot be constructed from a username alone. No generated toString exposing credentials. */

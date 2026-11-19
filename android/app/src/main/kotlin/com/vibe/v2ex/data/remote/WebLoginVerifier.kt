@@ -40,9 +40,7 @@ internal object WebLoginPage {
 
     fun validUsername(value: String): Boolean = usernamePattern.matches(value)
 
-    fun isSettings(url: String?): Boolean = isSite(url) && url?.toHttpUrlOrNull()?.let {
-        it.encodedPath == "/settings" && it.query == null && it.fragment == null
-    } == true
+    fun isSettings(url: String?): Boolean = isSite(url) && url?.toHttpUrlOrNull()?.encodedPath == "/settings"
 
     fun classify(html: String, base: HttpUrl, username: String): WebSessionVerification =
         when (BrowserLoginEvidence.fromHtml(html, base).reason(username)) {
