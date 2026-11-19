@@ -9,6 +9,11 @@ import com.vibe.v2ex.data.datastore.UnreadNotificationsStore
 import com.vibe.v2ex.data.moderation.ModerationStore
 import com.vibe.v2ex.data.remote.V2exApiV2
 import com.vibe.v2ex.data.remote.WebSessionService
+import com.vibe.v2ex.data.remote.WebLoginCandidate
+import com.vibe.v2ex.data.remote.WebSessionVerification
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import com.vibe.v2ex.data.repository.FavoritesRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.IOException
@@ -43,6 +48,8 @@ data class AccountUiState(
     val personalAccessTokenStatus: String? = null,
     val personalAccessTokenStatusIsError: Boolean = false,
     val showWebLogin: Boolean = false,
+    val clearingWebLogin: Boolean = false,
+    val webLoginError: String? = null,
     /** true = 存着登录态但服务器已不认（cookie 过期）；null = 尚未校验或无法校验。 */
     val sessionExpired: Boolean? = null,
 )
@@ -74,59 +81,64 @@ class AccountViewModel @Inject constructor(
     )
     val uiState: StateFlow<AccountUiState> = _uiState.asStateFlow()
 
+    private val loginAttempt = WebLoginAttempt()
+
     init {
         // 打开账号页时校验会话是否仍被服务器承认 —— cookie 过期时给出重新登录提示，
         // 而不是让「已登录」一直挂着但收藏同步/回复默默失败。
         if (secureStore.isWebSessionActive) {
             viewModelScope.launch {
-                val valid = runCatching { webSessionService.verifySession() }.getOrNull()
-                // 网络失败（null）不下结论，只有明确的 false 才提示过期。
-                if (valid != null) {
-                    _uiState.value = _uiState.value.copy(sessionExpired = !valid)
+                val revision = secureStore.accountCredentialsRevision.value
+                val valid = webSessionService.verifySession()
+                if (revision == secureStore.accountCredentialsRevision.value && valid != WebSessionVerification.UNVERIFIED) {
+                    _uiState.value = _uiState.value.copy(sessionExpired = valid == WebSessionVerification.SIGNED_OUT)
                 }
             }
         }
     }
 
-    fun openWebLogin() {
+    fun openWebLogin(): Unit {
+        if (_uiState.value.clearingWebLogin) return
+        loginAttempt.begin()
         _uiState.value = _uiState.value.copy(showWebLogin = true)
     }
 
-    fun dismissWebLogin() {
+    fun dismissWebLogin(): Unit {
+        loginAttempt.invalidate()
         _uiState.value = _uiState.value.copy(showWebLogin = false)
     }
 
-    /**
-     * WebView 报上来的候选会话。页面长得像已登录不算数 —— 必须拿这份 cookie 请求
-     * `/settings` 确认，只有明确通过才落盘。
-     *
-     * 刮用户名的兜底选择器会匹配到列表里任意一个楼主，所以未登录时逛首页也会产生
-     * 候选；网络失败就放行等于把这种匿名会话存下来，因此网络无结论时宁可让用户重试。
-     * cookie 刚写入偶尔还没生效，只对「没结论」重试，明确的不通过立即返回（未登录
-     * 浏览时每次翻页都要重试三次纯属浪费）。
-     */
-    suspend fun confirmWebLogin(cookieHeader: String, username: String): WebLoginConfirmation {
-        repeat(VERIFY_ATTEMPTS) { attempt ->
-            if (attempt > 0) delay(VERIFY_RETRY_DELAY_MS)
-            when (webSessionService.verifyCookie(cookieHeader)) {
-                true -> {
-                    onWebLoginSuccess(cookieHeader, username)
+    /** Only a confirmed, still-current browser attempt may replace the saved account. */
+    suspend fun confirmWebLogin(candidate: WebLoginCandidate): WebLoginConfirmation {
+        val attempt = loginAttempt.current()
+        val revision = secureStore.accountCredentialsRevision.value
+        repeat(VERIFY_ATTEMPTS) { index ->
+            if (index > 0) delay(VERIFY_RETRY_DELAY_MS)
+            if (!loginAttempt.accepts(attempt) || !candidate.isCurrent() || revision != secureStore.accountCredentialsRevision.value) return WebLoginConfirmation.UNVERIFIED
+            val result = webSessionService.verifyCookie(candidate)
+            currentCoroutineContext().ensureActive()
+            if (!loginAttempt.accepts(attempt) || !candidate.isCurrent() || revision != secureStore.accountCredentialsRevision.value) return WebLoginConfirmation.UNVERIFIED
+            when (result) {
+                WebSessionVerification.AUTHENTICATED -> {
+                    onWebLoginSuccess(candidate)
                     return WebLoginConfirmation.ACCEPTED
                 }
-                false -> return WebLoginConfirmation.NOT_SIGNED_IN
-                null -> Unit
+                WebSessionVerification.SIGNED_OUT -> return WebLoginConfirmation.NOT_SIGNED_IN
+                WebSessionVerification.UNVERIFIED -> Unit
             }
         }
         return WebLoginConfirmation.UNVERIFIED
     }
 
-    fun onWebLoginSuccess(cookieHeader: String, username: String) {
-        webSessionService.saveWebSession(cookieHeader, username)
+    private fun onWebLoginSuccess(candidate: WebLoginCandidate): Unit {
+        loginAttempt.invalidate()
+        webSessionService.saveWebSession(candidate)
         _uiState.value = _uiState.value.copy(
             webSessionActive = true,
-            sessionUsername = username.ifBlank { null },
+            sessionUsername = candidate.username,
             showWebLogin = false,
             sessionExpired = false,
+            webLoginError = null,
         )
         // 登录成功立即把网页收藏（话题 + 关注节点）拉回本地，不用等下次启动。
         viewModelScope.launch { favoritesRepository.syncFromRemote() }
@@ -139,15 +151,36 @@ class AccountViewModel @Inject constructor(
         viewModelScope.launch { unreadNotificationsStore.refresh() }
     }
 
-    fun signOutWebSession() {
+    private fun clearLocalWebSession(): Unit {
+        loginAttempt.invalidate()
         webSessionService.signOutWebSession()
-        _uiState.value = _uiState.value.copy(
-            webSessionActive = false,
-            sessionUsername = null,
-            sessionExpired = null,
-        )
+        _uiState.value = _uiState.value.copy(webSessionActive = false, sessionUsername = null, sessionExpired = null)
         moderationStore.syncSessionIdentity()
         viewModelScope.launch { unreadNotificationsStore.refresh() }
+    }
+
+    suspend fun resetWebLogin(): Unit {
+        clearLocalWebSession()
+        _uiState.value = _uiState.value.copy(clearingWebLogin = true, webLoginError = null)
+        try {
+            WebLoginBrowserData.clear()
+            currentCoroutineContext().ensureActive()
+            if (_uiState.value.showWebLogin) loginAttempt.begin()
+        } finally {
+            _uiState.value = _uiState.value.copy(clearingWebLogin = false)
+        }
+    }
+
+    fun signOutWebSession(): Unit {
+        if (_uiState.value.clearingWebLogin) return
+        dismissWebLogin()
+        viewModelScope.launch {
+            try { resetWebLogin() }
+            catch (error: CancellationException) { throw error }
+            catch (_: Exception) {
+                _uiState.value = _uiState.value.copy(webLoginError = "本地账号已退出，但网页登录数据清理失败，请进入登录页手动重置。")
+            }
+        }
     }
 
     fun onPatChange(value: String) {
