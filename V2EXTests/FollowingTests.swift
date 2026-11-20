@@ -63,6 +63,7 @@ final class FollowingTests: XCTestCase {
 
     override func tearDown() -> Void {
         FollowingProtocol.handler = nil
+        FollowingProtocol.beforeResponse = nil
         super.tearDown()
     }
 
@@ -112,6 +113,8 @@ final class FollowingTests: XCTestCase {
         FollowingProtocol.handler = handler
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [FollowingProtocol.self]
+        configuration.timeoutIntervalForRequest = 3
+        configuration.timeoutIntervalForResource = 5
         return V2EXClient(webSession: URLSession(configuration: configuration))
     }
 
@@ -227,6 +230,230 @@ final class FollowingTests: XCTestCase {
     }
 
     @MainActor
+    func testOrdinaryR2LoadCannotDiscardInFlightRefresh() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage(count == 1 ? [9] : [10]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { _, deliver in gate.hold(deliver) }
+        let refresh = Task { await model.load(feed: .r2, session: session, force: true) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        await model.load(feed: .r2, session: session)
+        XCTAssertTrue(model.isLoading, "A cache read must not finish the active refresh")
+        gate.release()
+        await refresh.value
+        XCTAssertEqual(model.topics.map(\.id), [10])
+        XCTAssertEqual(count, 2)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testDelayedR2RefreshCannotOverwriteSelectedFeed() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { request, deliver in
+            if request.url?.path == "/" { gate.hold(deliver) } else { deliver() }
+        }
+        let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
+        let refresh = Task { await model.load(feed: .r2, session: session, force: true) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        await model.load(feed: .all, session: session)
+        gate.release()
+        await refresh.value
+        XCTAssertEqual(model.feed, .all)
+        XCTAssertEqual(model.topics.map(\.id), [3])
+        XCTAssertFalse(model.isLoading)
+        XCTAssertEqual(model.refreshState(for: .r2).lastSuccess, firstSuccess)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .cancelled)
+        XCTAssertEqual(model.refreshState(for: .all).phase, .success(unchanged: false))
+    }
+
+    @MainActor
+    func testOrdinaryLoadCannotDiscardInFlightPagination() async throws -> Void {
+        let client = publicClient { request in
+            let first = request.url?.query?.contains("p=1") == true
+            return (200, [:], Self.publicPage(first ? [1] : [2], next: first ? "/recent?p=2" : nil))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .all, session: session)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { _, deliver in gate.hold(deliver) }
+        let nextPage = Task { await model.loadMore(feed: .all) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        await model.load(feed: .all, session: session)
+        XCTAssertTrue(model.isLoading)
+        gate.release()
+        await nextPage.value
+        XCTAssertEqual(model.topics.map(\.id), [1, 2])
+        XCTAssertFalse(model.hasMore)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testManualRefreshSupersedesPaginationWithoutLateAppend() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count], next: count == 1 ? "/recent?p=2" : nil))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .all, session: session)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { request, deliver in
+            if request.url?.query?.contains("p=2") == true { gate.hold(deliver) } else { deliver() }
+        }
+        let nextPage = Task { await model.loadMore(feed: .all) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        await model.refresh(feed: .all, session: session, source: .pull)
+        gate.release()
+        await nextPage.value
+        XCTAssertEqual(model.topics.map(\.id), [3])
+        XCTAssertFalse(model.hasMore)
+        XCTAssertFalse(model.isLoading)
+        XCTAssertEqual(model.refreshState(for: .all).phase, .success(unchanged: false))
+    }
+
+    @MainActor
+    func testRefreshCallbackChecksSelectionAtExecutionTime() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        // Create the callback while the R2 page is inactive, as TabView does for neighbors.
+        let refreshR2: () async -> Void = {
+            await model.refresh(feed: .r2, session: session, source: .pull)
+        }
+        await model.load(feed: .all, session: session)
+        await refreshR2()
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(model.feed, .all)
+        await model.load(feed: .r2, session: session)
+        await refreshR2()
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(model.topics.map(\.id), [3])
+        await model.load(feed: .all, session: session)
+        await refreshR2()
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(model.feed, .all)
+        XCTAssertEqual(model.topics.map(\.id), [1])
+    }
+
+    @MainActor
+    func testConcurrentManualRefreshesShareActiveRequest() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { _, deliver in gate.hold(deliver) }
+        let refresh = Task { await model.refresh(feed: .r2, session: session, source: .pull) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        await model.refresh(feed: .r2, session: session, source: .button)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .refreshing)
+        gate.release()
+        await refresh.value
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(model.topics.map(\.id), [2])
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: false))
+    }
+
+    @MainActor
+    func testCancelledRefreshRetainsSuccessTimeAndCanRetry() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { _, deliver in gate.hold(deliver) }
+        let refresh = Task { await model.refresh(feed: .r2, session: session, source: .pull) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        refresh.cancel()
+        await refresh.value
+        gate.release()
+        XCTAssertFalse(model.isLoading)
+        XCTAssertEqual(model.topics.map(\.id), [1])
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .cancelled)
+        XCTAssertEqual(model.refreshState(for: .r2).lastSuccess, firstSuccess)
+        FollowingProtocol.beforeResponse = nil
+        await model.refresh(feed: .r2, session: session, source: .button)
+        XCTAssertEqual(model.topics.map(\.id), [3])
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: false))
+    }
+
+    @MainActor
+    func testRefreshStatusDistinguishesSameRowsFromChangedFields() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            let html = Self.publicPage([9])
+            return (200, [:], count < 4 ? html : html.replacingOccurrences(of: "Test topic", with: "Changed title"))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
+        await model.load(feed: .all, session: session)
+        await model.load(feed: .r2, session: session)
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(model.refreshState(for: .r2).lastSuccess, firstSuccess)
+        // A real successful request with identical rows still records success.
+        await model.refresh(feed: .r2, session: session, source: .button)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: true))
+        XCTAssertGreaterThan(try XCTUnwrap(model.refreshState(for: .r2).lastSuccess), firstSuccess)
+        await model.refresh(feed: .r2, session: session, source: .button)
+        XCTAssertEqual(model.topics.map(\.id), [9])
+        XCTAssertEqual(model.topics.first?.title, "Changed title")
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: false))
+    }
+
+    @MainActor
+    func testFailedRefreshDoesNotAdvanceSuccessTime() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (count == 2 ? 503 : 200, [:], Self.publicPage([9]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
+        await model.refresh(feed: .r2, session: session, source: .pull)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .failed)
+        XCTAssertEqual(model.refreshState(for: .r2).lastSuccess, firstSuccess)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(model.topics.map(\.id), [9])
+        await model.refresh(feed: .r2, session: session, source: .retry)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: true))
+        XCTAssertNil(model.errorMessage)
+    }
+
+    @MainActor
     func testFollowingPaginationUsesSessionAndPreservesOrder() async throws -> Void {
         let session = V2EXSessionStore(inMemory: true)
         session.save(cookie: "fixture", username: "testuser")
@@ -267,6 +494,9 @@ final class FollowingTests: XCTestCase {
 
 private final class FollowingProtocol: URLProtocol {
     static var handler: ((URLRequest) -> (Int, [String: String], String))?
+    static var beforeResponse: ((URLRequest, @escaping () -> Void) -> Void)?
+    private let lock = NSRecursiveLock()
+    private var stopped = false
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() -> Void {
@@ -276,9 +506,44 @@ private final class FollowingProtocol: URLProtocol {
         }
         let (code, headers, body) = handler(request)
         let response = HTTPURLResponse(url: url, statusCode: code, httpVersion: "HTTP/1.1", headerFields: headers)!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(body.utf8))
-        client?.urlProtocolDidFinishLoading(self)
+        let deliver: () -> Void = { [self] in
+            lock.lock()
+            defer { lock.unlock() }
+            guard !stopped else { return }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if let beforeResponse = Self.beforeResponse { beforeResponse(request, deliver) }
+        else { deliver() }
     }
-    override func stopLoading() -> Void {}
+    override func stopLoading() -> Void {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+    }
+}
+
+private final class ResponseGate {
+    let started = XCTestExpectation(description: "Response is held")
+    private let lock = NSLock()
+    private var delivery: (() -> Void)?
+    private var released = false
+
+    func hold(_ delivery: @escaping () -> Void) -> Void {
+        lock.lock()
+        let deliverNow = released || self.delivery != nil
+        if !deliverNow { self.delivery = delivery }
+        lock.unlock()
+        if deliverNow { delivery() } else { started.fulfill() }
+    }
+
+    func release() -> Void {
+        lock.lock()
+        released = true
+        let delivery = self.delivery
+        self.delivery = nil
+        lock.unlock()
+        delivery?()
+    }
 }

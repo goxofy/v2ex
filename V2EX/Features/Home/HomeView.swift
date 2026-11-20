@@ -112,16 +112,17 @@ struct HomeView: View {
         } else {
         ScrollView {
             LazyVStack(spacing: 10) {
+                if model.feed == feed { refreshStatus(for: feed) }
                 if model.feed == feed, let message = model.errorMessage, !visibleTopics.isEmpty {
                     EmptyStateCard(icon: "wifi.exclamationmark", title: "刷新失败，当前显示上次内容", message: message,
                                    actionTitle: "重试") {
-                        Task { await model.load(feed: feed, session: session, force: true) }
+                        Task { await model.refresh(feed: feed, session: session, source: .retry) }
                     }
                 }
                 if let message = model.errorMessage, visibleTopics.isEmpty {
                     EmptyStateCard(icon: "wifi.exclamationmark", title: "没能加载", message: message,
                                    actionTitle: "重试") {
-                        Task { await model.load(feed: feed, session: session, force: true) }
+                        Task { await model.refresh(feed: feed, session: session, source: .retry) }
                     }
                 } else if model.isLoading && visibleTopics.isEmpty {
                     LoadingCard()
@@ -192,11 +193,40 @@ struct HomeView: View {
             .padding(.bottom, 100)
         }
         .scrollIndicators(.hidden)
-        .pullToRefresh(isEnabled: model.feed == feed) {
-            await model.load(feed: feed, session: session, force: true)
+        .pullToRefresh {
+            await model.refresh(feed: feed, session: session, source: .pull)
         }
         .scrollPosition(scrollBinding(for: feed))
         }
+    }
+
+    private func refreshStatus(for feed: HomeViewModel.Feed) -> some View {
+        let state = model.refreshState(for: feed)
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                switch state.phase {
+                case .idle: Text("尚未获取列表")
+                case .refreshing: Text("正在刷新…")
+                case .success(let unchanged): Text(unchanged ? "已获取，列表无变化" : "已获取列表")
+                case .failed: Text("刷新失败，保留上次内容")
+                case .cancelled: Text("刷新已取消，可重试")
+                }
+                if let date = state.lastSuccess {
+                    Text("最近成功获取 \(date.formatted(.dateTime.hour().minute().second()))")
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(Theme.muted)
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            Button("立即刷新", systemImage: "arrow.clockwise") {
+                Task { await model.refresh(feed: feed, session: session, source: .button) }
+            }
+            .font(.footnote)
+            .disabled(state.phase == .refreshing)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
     }
 
     private func scrollBinding(for feed: HomeViewModel.Feed) -> Binding<ScrollPosition> {

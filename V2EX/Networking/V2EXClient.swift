@@ -187,12 +187,21 @@ private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
     }
 }
 
+enum FeedRequestTrace {
+    @TaskLocal static var id: UUID?
+    private static let logger = Logger(subsystem: "com.vibe.v2ex", category: "feed-refresh")
+
+    static func record(_ event: String, request: UUID) -> Void {
+        // Events contain only fixed phases, counts and local request IDs, never account data.
+        logger.info("request=\(request.uuidString, privacy: .public) \(event, privacy: .public)")
+    }
+}
+
 /// Talks to three surfaces:
 /// * V2EX API 1.0 — public, no auth, powers everything read-only.
 /// * V2EX API 2.0 — needs a Personal Access Token; notifications, own profile,
 ///   paginated node topics.
 /// * sov2ex — the community full-text index, since V2EX exposes no search API.
-
 actor V2EXClient {
     static let shared = V2EXClient()
 
@@ -1709,7 +1718,11 @@ extension V2EXClient {
         }
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+        if let trace = FeedRequestTrace.id { FeedRequestTrace.record("http-start", request: trace) }
         let (data, response) = try await webSession.data(for: request)
+        if let trace = FeedRequestTrace.id {
+            FeedRequestTrace.record("http-response status=\((response as? HTTPURLResponse)?.statusCode ?? 0)", request: trace)
+        }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let html = String(data: data, encoding: .utf8) else {
             throw V2EXError.decoding("网页加载失败：\(path)")

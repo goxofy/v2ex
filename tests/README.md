@@ -53,7 +53,11 @@ Checks cover append/deduplication, retrying the same page after failure, refresh
 
 `python3 tests/check-reply-submission.py` also runs `FollowingTests` against the production client and `HomeViewModel`. Public-feed cases verify unique cache-busting URLs, explicit cache bypass headers/policy, preservation of tab/page parameters, repeated R2 refresh within one model, and pagination reset after refreshing All. Failed refreshes retain previous rows and an error; a subsequent successful refresh replaces rows and clears the error. These use URLProtocol fixtures rather than waiting several hours or accessing a real account.
 
-On device, refresh R2, leave the app running while reading topics, then refresh again later without force-quitting. Check for updated website ranking or a visible refresh error above the retained list. A full IPA build and device UI validation are still required; the standalone tests do not exercise SwiftUI's refresh gesture or prove the live site's cache behavior.
+Delayed URLProtocol responses also cover an ordinary same-feed load during refresh or pagination, switching away before a response arrives, a manual refresh superseding pagination, stale refresh callbacks, duplicate manual refreshes, cancellation/retry, and success timestamps. These demonstrate the model race independently of the live website: a same-feed cache read must not invalidate an active refresh. Row comparisons include fields and ordering, not only topic IDs.
+
+On device, refresh R2, open a topic and return, switch tabs and return, background/foreground the app, then refresh again after extended use without force-quitting. The current feed shows the last successful fetch time and an explicit refresh button. Cache reads, failures, cancellations and discarded responses must not advance that time. If pulling does not update it, try the button to distinguish gesture delivery from request handling. A successful identical response is labeled as unchanged; it is not a claim about when the website itself last updated.
+
+Local OSLog events in subsystem `com.vibe.v2ex`, category `feed-refresh`, correlate refresh source, HTTP start/status, parsed count, and commit/discard outcome using request IDs. They contain no account data, cookies, tokens or response bodies, and are not uploaded. A full IPA build and device UI validation are still required; the standalone tests do not exercise SwiftUI's refresh gesture or reproduce the reported hours-long behavior.
 
 ## Website notification read state
 

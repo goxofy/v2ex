@@ -9,7 +9,11 @@ root = Path(__file__).resolve().parents[1]
 model = (root / 'V2EX/Features/Home/HomeViewModel.swift').read_text()
 stubs = r'''
 enum HomeFeed: Hashable { case all, hot, r2, hackerNews, following, node(String, String) }
-struct V2Topic { let id: Int; var title = "topic"; var authorName = "author" }
+struct V2Topic: Equatable { let id: Int; var title = "topic"; var authorName = "author" }
+enum FeedRequestTrace {
+    @TaskLocal static var id: UUID?
+    static func record(_ event: String, request: UUID) -> Void {}
+}
 enum V2EXEndpoint { static let base = "https://www.v2ex.com" }
 enum V2EXError: Error { case decoding(String), sessionExpired }
 extension Error { var isCancellation: Bool { self is CancellationError } }
