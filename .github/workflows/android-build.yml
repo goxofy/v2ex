@@ -1,5 +1,5 @@
 # 仅手动构建 Android，不启动或等待 iOS workflow。
-# APK 使用临时 Debug 签名，不用于正式发行。
+# Release 变体启用混淆和资源压缩；未配置发布密钥时仍使用临时 Debug 签名。
 name: Build Android App
 
 on:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   android:
-    name: Build debug APK
+    name: Build release APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -36,25 +36,26 @@ jobs:
       - name: Set up Gradle and validate wrapper
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Test and build debug APK
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      # JVM 单测沿用工程已启用的 Debug 测试入口，不执行 assembleDebug。
+      - name: Test and build release APK
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease
 
-      - name: Lint debug variant
-        run: ./gradlew --no-daemon :app:lintDebug
+      - name: Lint release variant
+        run: ./gradlew --no-daemon :app:lintRelease
 
       - name: Verify APK signature and metadata
         run: |
           set -euo pipefail
-          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK_PATH"
           "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose "$APK_PATH"
           "$ANDROID_HOME/build-tools/37.0.0/aapt" dump badging "$APK_PATH"
 
-      - name: Upload debug APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: V2EX-debug-apk-${{ github.sha }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: V2EX-release-apk-${{ github.sha }}
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 7
 
@@ -66,6 +67,7 @@ jobs:
           path: |
             android/app/build/reports/tests/testDebugUnitTest/
             android/app/build/test-results/testDebugUnitTest/*.xml
-            android/app/build/reports/lint-results-debug.*
+            android/app/build/reports/lint-results-release.*
+            android/app/build/outputs/mapping/release/mapping.txt
           if-no-files-found: warn
           retention-days: 7

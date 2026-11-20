@@ -1,6 +1,6 @@
 # V2EX for Android
 
-> 本目录由上游固定版本导入，来源与许可状态见 [UPSTREAM.md](UPSTREAM.md)。本仓可在一次 Actions 运行中构建 IPA 和 Debug APK，使用方法见[根 README](../README.md#通过-github-actions-构建-ipa-和-apk)。下方保留上游项目介绍；上游 Releases 不是本仓构建产物。
+> 本目录由上游固定版本导入，来源与许可状态见 [UPSTREAM.md](UPSTREAM.md)。本仓提供独立的手动 Actions 分别构建 IPA 和 Release APK，使用方法见[根 README](../README.md#通过-github-actions-构建-ipa-和-apk)。下方保留上游项目介绍；上游 Releases 不是本仓构建产物。
 
 面向个人使用的 V2EX Android 客户端。Kotlin + Jetpack Compose 构建， 数据来自 V2EX API（v1/v2）、网页会话和 sov2ex 搜索。
 
@@ -57,11 +57,11 @@
 ## 构建
 
 ```bash
-# 调试构建
-./gradlew :app:assembleDebug
+# Release 构建（与 Actions 一致）
+./gradlew :app:testDebugUnitTest :app:assembleRelease :app:lintRelease
 
 # 安装到已连接设备/模拟器
-./gradlew :app:installDebug
+./gradlew :app:installRelease
 ```
 
 要求：JDK 17+、Android SDK Platform 37。AGP 9.x 内置 Kotlin 支持（无需单独的 kotlin-android 插件）。
