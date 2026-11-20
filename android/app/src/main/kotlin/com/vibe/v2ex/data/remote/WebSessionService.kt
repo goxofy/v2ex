@@ -98,34 +98,11 @@ class WebSessionService @Inject constructor(
         ))
     }
 
+    private val publicFeeds: PublicFeedService by lazy { PublicFeedService(okHttpClient) }
+
     /** Public website feed pagination: `/recent?p=N` or `/go/{node}?p=N`. */
     suspend fun publicTopicPage(nodeName: String?, page: Int): Result<PublicTopicPage> =
-        withContext(Dispatchers.IO) {
-            websiteResult("加载网页话题失败，请检查网络后重试") {
-                if (page < 1) websiteFailure("页码必须大于 0")
-                val node = nodeName?.trim()?.also {
-                    if (!WEBSITE_NODE_NAME.matches(it)) websiteFailure("节点名称无效")
-                }
-                val path = node?.let { "/go/$it" } ?: "/recent"
-                val response = executeWebsiteGet(path = "$path?p=$page", userAgent = DESKTOP_USER_AGENT)
-                validateWebsitePage(response, operation = "加载网页话题", expectedPath = path)
-                val topics = WebsitePageParser.publicTopics(
-                    html = response.html,
-                    baseUrl = response.finalUrl,
-                    fallbackNodeName = node,
-                )
-                if (topics.isEmpty()) websiteFailure("网页没有返回话题，请稍后重试")
-                PublicTopicPage(
-                    topics = topics,
-                    hasMore = WebsitePageParser.hasMorePublicTopics(
-                        html = response.html,
-                        baseUrl = response.finalUrl,
-                        expectedPath = path,
-                        page = page,
-                    ),
-                )
-            }
-        }
+        publicFeeds.topics(nodeName, page)
 
     /** Reads the authoritative blocked member IDs embedded in the logged-in desktop homepage. */
     suspend fun blockedUsers(cookieHeader: String): Result<WebsiteBlockSnapshot> =
@@ -268,40 +245,16 @@ class WebSessionService @Inject constructor(
      * 10 条且没有分页参数，网页同一时刻有 30+ 条 —— 用户对着网页看会觉得 App 少了
      * 一大截。这一页未登录也拿得全，所以不需要会话（mirrors iOS hotTopicsFromWeb）。
      */
-    suspend fun hotTopics(): List<Topic> = withContext(Dispatchers.IO) {
-        parseTopicRows(fetchDocument("$BASE/?tab=hot"))
-    }
+    suspend fun hotTopics(): List<Topic> =
+        publicFeeds.rankedTopics(PublicFeedService.Ranking.HOT).getOrThrow()
 
     /**
      * 网页版 R2（GET /?tab=r2）。R2 是网页端按投票算出来的首页排序，不是节点：
      * v1 的 latest/hot 接口会忽略 `tab` 参数，v2 也没有 tabs 接口，只能读网页
      * （mirrors iOS r2Topics）。未登录同样拿得到。
      */
-    suspend fun r2Topics(): List<Topic> = withContext(Dispatchers.IO) {
-        // R2 页面会被 CDN 短暂缓存，带个独立查询参数，下拉刷新才能拿到新排序。
-        parseTopicRows(fetchDocument("$BASE/?tab=r2&_=${System.currentTimeMillis()}"))
-    }
-
-    /**
-     * 解析首页/节点页的话题行。一行的结构：
-     * ```
-     * <div class="cell item"><table><tr>
-     *   <td><a href="/member/foo"><img class="avatar" src="…_normal.png"></a></td>
-     *   <td><span class="item_title"><a href="/t/123#reply22" class="topic-link">标题</a></span>
-     *     <span class="topic_info"><a class="node" href="/go/career">职场话题</a> •
-     *       <strong><a href="/member/foo">foo</a></strong> •
-     *       <span title="2026-08-31 11:30:18 +08:00">6 mins ago</span> •
-     *       Lastly replied by <strong><a href="/member/bar">bar</a></strong></span></td>
-     *   <td><a class="count_livid">22</a></td>
-     * </tr></table></div>
-     * ```
-     * 作者和「最后回复者」用的是同一种 `<strong><a href="/member/…">` 标记，只有按
-     * 文档顺序取第一个才不会认错人。时间取 `title` 里的绝对时间戳而不是「6 mins ago」
-     * 文案 —— 后者随登录语言在中英文之间切换，解析出来也只是个近似值。
-     * 正文网页列表不提供，[Topic.content] 留空，只影响首页大卡片的摘要行。
-     */
-    private fun parseTopicRows(doc: Document): List<Topic> =
-        WebsitePageParser.publicTopics(doc.html(), doc.baseUri())
+    suspend fun r2Topics(): List<Topic> =
+        publicFeeds.rankedTopics(PublicFeedService.Ranking.R2).getOrThrow()
 
     /**
      * 网页收藏列表：GET /my/topics 分页拉全（每页 20 条，最多 [maxPages] 页）。

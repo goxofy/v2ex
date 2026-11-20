@@ -78,6 +78,17 @@ data class HomeUiState(
     val communityPulseEnabled: Boolean = true,
 ) {
     val currentFeed: HomeFeed get() = feeds.getOrElse(currentIndex) { HomeFeed.All }
+
+    /** Keep readable rows and their cursor, but never hide a failed refresh behind them. */
+    internal fun refreshFailed(feedKey: String, message: String, liveHasMore: Boolean?): HomeUiState = copy(
+        loadingFeeds = loadingFeeds - feedKey,
+        errorsByFeed = errorsByFeed + (feedKey to message),
+        hasMoreByFeed = if (liveHasMore != null) {
+            hasMoreByFeed + (feedKey to liveHasMore)
+        } else {
+            hasMoreByFeed - feedKey
+        },
+    )
 }
 
 @HiltViewModel
@@ -259,18 +270,7 @@ class HomeViewModel @Inject constructor(
             }.onFailure {
                 val message = networkErrors.describe(result.exceptionOrNull(), "加载失败")
                 _uiState.update {
-                    it.copy(
-                        loadingFeeds = it.loadingFeeds - feed.key,
-                        // 有快照就继续显示快照 + 顶部离线提示，不要退回整页报错。
-                        errorsByFeed = if (feed.key in it.topicsByFeed) {
-                            it.errorsByFeed
-                        } else {
-                            it.errorsByFeed + (feed.key to message)
-                        },
-                        hasMoreByFeed = snapshots[feed.key]?.let { snapshot ->
-                            it.hasMoreByFeed + (feed.key to snapshot.hasMore)
-                        } ?: (it.hasMoreByFeed - feed.key),
-                    )
+                    it.refreshFailed(feed.key, message, snapshots[feed.key]?.hasMore)
                 }
             }
         }
