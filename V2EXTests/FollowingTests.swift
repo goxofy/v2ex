@@ -64,6 +64,7 @@ final class FollowingTests: XCTestCase {
     override func tearDown() -> Void {
         FollowingProtocol.handler = nil
         FollowingProtocol.beforeResponse = nil
+        FollowingProtocol.transportError = nil
         super.tearDown()
     }
 
@@ -379,7 +380,7 @@ final class FollowingTests: XCTestCase {
     }
 
     @MainActor
-    func testCancelledRefreshRetainsSuccessTimeAndCanRetry() async throws -> Void {
+    func testCancelledLoadRetainsSuccessTimeAndCanRetry() async throws -> Void {
         var count = 0
         let client = publicClient { _ in
             count += 1
@@ -391,7 +392,7 @@ final class FollowingTests: XCTestCase {
         let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
         let gate = ResponseGate()
         FollowingProtocol.beforeResponse = { _, deliver in gate.hold(deliver) }
-        let refresh = Task { await model.refresh(feed: .r2, session: session, source: .pull) }
+        let refresh = Task { await model.load(feed: .r2, session: session, force: true) }
         await fulfillment(of: [gate.started], timeout: 3)
         refresh.cancel()
         await refresh.value
@@ -404,6 +405,153 @@ final class FollowingTests: XCTestCase {
         await model.refresh(feed: .r2, session: session, source: .button)
         XCTAssertEqual(model.topics.map(\.id), [3])
         XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: false))
+    }
+
+    @MainActor
+    func testPullRefreshSurvivesCallerCancellation() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { _, deliver in gate.hold(deliver) }
+        let caller = Task { await model.refresh(feed: .r2, session: session, source: .pull) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        caller.cancel()
+        gate.release()
+        await caller.value
+        XCTAssertTrue(caller.isCancelled)
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(model.topics.map(\.id), [2])
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: false))
+        XCTAssertGreaterThan(try XCTUnwrap(model.refreshState(for: .r2).lastSuccess), firstSuccess)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testPullRefreshFromAlreadyCancelledCallerStillFetches() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let caller = Task { @MainActor in
+            XCTAssertTrue(Task.isCancelled)
+            await model.refresh(feed: .r2, session: session, source: .pull)
+        }
+        // The main-actor caller cannot begin until this test yields below.
+        caller.cancel()
+        await caller.value
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(model.topics.map(\.id), [2])
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: false))
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testButtonDoesNotDuplicateRefreshAfterPullCallerIsCancelled() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { _, deliver in gate.hold(deliver) }
+        let caller = Task { await model.refresh(feed: .r2, session: session, source: .pull) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        caller.cancel()
+        await model.refresh(feed: .r2, session: session, source: .button)
+        gate.release()
+        await caller.value
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(model.topics.map(\.id), [2])
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: false))
+    }
+
+    @MainActor
+    func testCancelledPullCallerCannotOverwriteAnotherFeed() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage([count]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
+        let gate = ResponseGate()
+        FollowingProtocol.beforeResponse = { request, deliver in
+            if request.url?.path == "/" { gate.hold(deliver) } else { deliver() }
+        }
+        let caller = Task { await model.refresh(feed: .r2, session: session, source: .pull) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        caller.cancel()
+        await model.load(feed: .all, session: session)
+        gate.release()
+        await caller.value
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(model.feed, .all)
+        XCTAssertEqual(model.topics.map(\.id), [3])
+        XCTAssertEqual(model.refreshState(for: .r2).lastSuccess, firstSuccess)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .cancelled)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testCancelledPullCallerCannotCommitPreviousAccount() async throws -> Void {
+        let session = V2EXSessionStore(inMemory: true)
+        session.save(cookie: "first-fixture", username: "first")
+        let gate = ResponseGate()
+        var count = 0
+        let model = HomeViewModel { base, _, _ in
+            count += 1
+            let result = try FollowingPage(html: Self.page(Self.row(count)), base: base, page: 1)
+            if count == 1 { return result }
+            return await withCheckedContinuation { continuation in
+                gate.hold { continuation.resume(returning: result) }
+            }
+        }
+        await model.load(feed: .following, session: session)
+        let caller = Task { await model.refresh(feed: .following, session: session, source: .pull) }
+        await fulfillment(of: [gate.started], timeout: 3)
+        caller.cancel()
+        session.save(cookie: "second-fixture", username: "second")
+        model.synchronize(session: session)
+        gate.release()
+        await caller.value
+        XCTAssertEqual(count, 2)
+        XCTAssertTrue(model.topics.isEmpty)
+        XCTAssertNil(model.refreshState(for: .following).lastSuccess)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testTransportCancellationIsNotReportedAsSuccessfulRefresh() async throws -> Void {
+        let client = publicClient { _ in (200, [:], Self.publicPage([9])) }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        let firstSuccess = try XCTUnwrap(model.refreshState(for: .r2).lastSuccess)
+        FollowingProtocol.transportError = URLError(.cancelled)
+        await model.refresh(feed: .r2, session: session, source: .pull)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .cancelled)
+        XCTAssertEqual(model.refreshState(for: .r2).lastSuccess, firstSuccess)
+        XCTAssertEqual(model.topics.map(\.id), [9])
+        XCTAssertFalse(model.isLoading)
+        FollowingProtocol.transportError = nil
+        await model.refresh(feed: .r2, session: session, source: .retry)
+        XCTAssertEqual(model.refreshState(for: .r2).phase, .success(unchanged: true))
     }
 
     @MainActor
@@ -495,11 +643,16 @@ final class FollowingTests: XCTestCase {
 private final class FollowingProtocol: URLProtocol {
     static var handler: ((URLRequest) -> (Int, [String: String], String))?
     static var beforeResponse: ((URLRequest, @escaping () -> Void) -> Void)?
+    static var transportError: URLError?
     private let lock = NSRecursiveLock()
     private var stopped = false
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() -> Void {
+        if let error = Self.transportError {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
         guard let handler = Self.handler, let url = request.url else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return

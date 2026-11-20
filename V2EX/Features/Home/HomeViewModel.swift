@@ -82,12 +82,17 @@ final class HomeViewModel: ObservableObject {
     }
 
     func refresh(feed: Feed, session: V2EXSessionStore, source: RefreshSource) async -> Void {
-        // Read selection when the callback runs, not when TabView creates its neighboring pages.
-        guard self.feed == feed, feed != .hackerNews else {
-            FeedRequestTrace.record("ignored source=\(source.rawValue) reason=inactive-page", request: UUID())
-            return
+        // Do not let cancellation of SwiftUI's refreshable callback cancel the manual
+        // request. Like the button, run independently but still await completion.
+        let operation = Task { @MainActor in
+            // Selection can change before this task starts; never reactivate an old page.
+            guard self.feed == feed, feed != .hackerNews else {
+                FeedRequestTrace.record("ignored source=\(source.rawValue) reason=inactive-page", request: UUID())
+                return
+            }
+            await load(feed: feed, session: session, force: true, source: source)
         }
-        await load(feed: feed, session: session, force: true, source: source)
+        await operation.value
     }
 
     func load(feed: Feed, session: V2EXSessionStore, force: Bool = false, source: RefreshSource = .automatic) async -> Void {
