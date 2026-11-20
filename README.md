@@ -10,7 +10,7 @@
 
 - **本仓 IPA / APK**：分别通过 [Build iOS App](https://github.com/goxofy/v2ex/actions/workflows/ios-build.yml) 和 [Build Android App](https://github.com/goxofy/v2ex/actions/workflows/android-build.yml) 手动构建，步骤和签名限制见[构建说明](#通过-github-actions-构建-ipa-和-apk)。
 - **上游 iOS TestFlight 公测**：[testflight.apple.com/join/jUBsFk9u](https://testflight.apple.com/join/jUBsFk9u)，不是本仓 Actions 的产物。
-- **上游 Android 发行版**：[xinghelee/v2ex-android Releases](https://github.com/xinghelee/v2ex-android/releases/latest)（Android 8.0+），与本仓 Debug APK 的签名和包名不同。
+- **上游 Android 发行版**：[xinghelee/v2ex-android Releases](https://github.com/xinghelee/v2ex-android/releases/latest)（Android 8.0+），与本仓 Release APK 的签名不同，不能直接互相覆盖安装。
 
 ## 截图
 
@@ -96,15 +96,15 @@
 
 1. 在 **Actions** 中选择要构建的平台，再点击 **Run workflow**：
    - **Build iOS App**（`ios-build.yml`）：只构建未签名 IPA，使用 macOS runner。
-   - **Build Android App**（`android-build.yml`）：只构建 Debug APK，使用 Ubuntu runner。
+   - **Build Android App**（`android-build.yml`）：只构建 Release APK（开启混淆和资源压缩），使用 Ubuntu runner。
 2. 选择需要构建的分支并运行。需要两端产物时，分别启动两个 workflow；不会默认同时构建。
 3. 等待对应 workflow 成功，在各自运行页面底部的 **Artifacts** 下载：
    - iOS：`V2EX-unsigned-ipa-<提交 SHA>`，解压得到 `V2EX-unsigned.ipa`。
-   - Android：`V2EX-debug-apk-<提交 SHA>`，解压得到 `app-debug.apk`；`V2EX-android-reports-<提交 SHA>` 为单元测试和 Lint 报告。
+   - Android：`V2EX-release-apk-<提交 SHA>`，解压得到 `app-release.apk`；`V2EX-android-reports-<提交 SHA>` 为单元测试、Release Lint 报告及混淆映射。
 
 两个 workflow 独立触发、独立显示结果，互不调用或等待。**构建 Android 不会启动 iOS，也不受 macOS runner 排队失败影响**；单独构建 iOS 时仍可能遇到 GitHub 的 macOS 容量限制，拆分并不会消除这一平台限制。产物保留 **7 天**；构建入口仅手动触发，不在每次 push 时消耗 runner，也不会自动发布 TestFlight 或 GitHub Release。
 
-> **签名限制：** IPA 未签名，需要自行签名侧载，不能直接安装普通 iPhone。APK 已用 Debug 密钥签名，可安装到 Android 8.0+，包名为 `com.vibe.v2ex.debug`，不是正式发行版。不同 Actions 运行的临时 Debug 密钥可能不同，覆盖升级可能失败；卸载后重装会清除该应用数据，请先备份。它不能替代原作者签名的正式版本。正式分发或稳定覆盖升级需要另行配置并保存自己的签名密钥；不要将密钥或密码提交到仓库。
+> **签名与安装：** IPA 未签名，需要自行签名侧载，不能直接安装普通 iPhone。APK 为 Release 变体，可安装到 Android 8.0+，包名为 `com.vibe.v2ex`；与旧 Debug 版的 `com.vibe.v2ex.debug` 可并存，但不会自动继承其登录和本地数据。当前 Actions 未配置专用发布密钥，沿用工程的 Debug 签名回退，**Release 变体不等于正式发布签名**。不同运行的临时密钥可能不同，后续覆盖升级可能失败；卸载会清除应用数据，请先备份。它不能覆盖原作者签名的同包名版本。正式分发或稳定覆盖升级需要另行配置并保存自己的签名密钥；不要将密钥或密码提交到仓库。
 
 **首次启用：** 新增的 `android-build.yml` 需要先合入默认分支 `main`，才会出现在 Actions 的手动运行列表中。若仍在整合分支，先合并对应 PR；不要把“尚未登记工作流”误认为构建失败。
 
@@ -143,11 +143,11 @@ python3 tests/check-reply-submission.py
 在仓库根目录执行：
 
 ```bash
-./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:assembleDebug
-./android/gradlew -p android --no-daemon :app:lintDebug
+./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:assembleRelease
+./android/gradlew -p android --no-daemon :app:lintRelease
 ```
 
-APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。也可用 Android Studio 直接打开 `android/`。Android 的源码来源和签名细节见 [`android/UPSTREAM.md`](android/UPSTREAM.md)。
+APK 位于 `android/app/build/outputs/apk/release/app-release.apk`。也可用 Android Studio 直接打开 `android/`。Android 的源码来源和签名细节见 [`android/UPSTREAM.md`](android/UPSTREAM.md)。
 
 ## 项目结构
 
