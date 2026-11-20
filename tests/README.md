@@ -47,7 +47,13 @@ python3 tests/check-feed-pagination.py
 python3 tests/check-topic-pages.py
 ```
 
-Checks cover append/deduplication, retrying the same page after failure, refresh, cached cursors, stale responses after switching feeds, exhausted followed nodes, public recent/node HTML templates, and end-of-list detection. The parser check optionally accepts paths to public page-2 HTML captures (include `node` in node capture filenames); captures stay outside the repository.
+Checks cover append/deduplication, retrying the same page after failure, refresh, cached cursors, stale responses after switching feeds, following pagination/session invalidation, public recent/node HTML templates, and end-of-list detection. The parser check optionally accepts paths to public page-2 HTML captures (include `node` in node capture filenames); captures stay outside the repository.
+
+### iOS public-feed refresh
+
+`python3 tests/check-reply-submission.py` also runs `FollowingTests` against the production client and `HomeViewModel`. Public-feed cases verify unique cache-busting URLs, explicit cache bypass headers/policy, preservation of tab/page parameters, repeated R2 refresh within one model, and pagination reset after refreshing All. Failed refreshes retain previous rows and an error; a subsequent successful refresh replaces rows and clears the error. These use URLProtocol fixtures rather than waiting several hours or accessing a real account.
+
+On device, refresh R2, leave the app running while reading topics, then refresh again later without force-quitting. Check for updated website ranking or a visible refresh error above the retained list. A full IPA build and device UI validation are still required; the standalone tests do not exercise SwiftUI's refresh gesture or prove the live site's cache behavior.
 
 ## Website notification read state
 
