@@ -302,11 +302,15 @@ private fun FeedPage(
                             },
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                text = emptyMessage,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            if (error != null) {
+                                FeedRefreshError(error, !isLoading && !isLoadingMore, onRefresh)
+                            } else {
+                                Text(
+                                    text = emptyMessage,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                     if (hasMore || loadMoreError != null) {
@@ -337,7 +341,11 @@ private fun FeedPage(
                         bottom = TAB_BAR_CLEARANCE,
                     ),
                 ) {
-                    if (cachedAt != null) {
+                    if (error != null) {
+                        item(key = "refresh-error") {
+                            FeedRefreshError(error, !isLoading && !isLoadingMore, onRefresh)
+                        }
+                    } else if (cachedAt != null) {
                         item(key = "offline-banner") {
                             OfflineNoticeBar(Modifier.padding(bottom = 10.dp), cachedAt = cachedAt)
                         }
@@ -389,6 +397,23 @@ private fun FeedPage(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FeedRefreshError(message: String, canRetry: Boolean, onRetry: () -> Unit): Unit {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(
+            text = "刷新失败，当前显示上次内容",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.error,
+        )
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = onRetry, enabled = canRetry) { Text("重试") }
     }
 }
 
