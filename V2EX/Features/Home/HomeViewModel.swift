@@ -13,6 +13,27 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var hasMore = false
     @Published private(set) var paginationID = UUID()
 
+    enum RefreshSource: String { case automatic, pull, button, retry }
+
+    struct RefreshState: Equatable {
+        enum Phase: Equatable { case idle, refreshing, success(unchanged: Bool), failed, cancelled }
+        var phase: Phase = .idle
+        var lastSuccess: Date?
+    }
+
+    @Published private(set) var refreshStates: [Feed: RefreshState] = [:]
+
+    private struct ActiveRequest {
+        let id: UUID
+        let feed: Feed
+        let isFirstPage: Bool
+    }
+    private var activeRequest: ActiveRequest?
+
+    func refreshState(for feed: Feed) -> RefreshState {
+        refreshStates[feed] ?? RefreshState()
+    }
+
     private struct Snapshot {
         var topics: [V2Topic]
         var page: Int
@@ -42,6 +63,8 @@ final class HomeViewModel: ObservableObject {
         cookie = session.cookie
         base = V2EXEndpoint.base
         cache[.following] = nil
+        if activeRequest?.feed == .following { invalidateActiveRequest() }
+        refreshStates[.following] = nil
         if feed == .following {
             generation = UUID()
             topics = []
@@ -58,8 +81,24 @@ final class HomeViewModel: ObservableObject {
         return sessionIdentity == "\(webSession.revision)|\(V2EXEndpoint.base)"
     }
 
-    func load(feed: Feed, session: V2EXSessionStore, force: Bool = false) async {
+    func refresh(feed: Feed, session: V2EXSessionStore, source: RefreshSource) async -> Void {
+        // Read selection when the callback runs, not when TabView creates its neighboring pages.
+        guard self.feed == feed, feed != .hackerNews else {
+            FeedRequestTrace.record("ignored source=\(source.rawValue) reason=inactive-page", request: UUID())
+            return
+        }
+        await load(feed: feed, session: session, force: true, source: source)
+    }
+
+    func load(feed: Feed, session: V2EXSessionStore, force: Bool = false, source: RefreshSource = .automatic) async -> Void {
         synchronize(session: session)
+        if let active = activeRequest, active.feed == feed, self.feed == feed,
+           !force || active.isFirstPage {
+            // Ordinary on-appear/cache loads must not invalidate an in-flight refresh.
+            FeedRequestTrace.record("coalesced source=\(source.rawValue)", request: active.id)
+            return
+        }
+        invalidateActiveRequest()
         self.feed = feed
         let request = UUID()
         generation = request
@@ -73,31 +112,49 @@ final class HomeViewModel: ObservableObject {
         }
         if !force { topics = [] }
         isLoading = true
-        defer { if generation == request { isLoading = false } }
+        activeRequest = ActiveRequest(id: request, feed: feed, isFirstPage: true)
+        refreshStates[feed, default: RefreshState()].phase = .refreshing
+        FeedRequestTrace.record("start source=\(source.rawValue)", request: request)
+        defer { finishRequest(request) }
         do {
-            let snapshot = try await fetch(feed: feed, page: 1)
-            guard !Task.isCancelled, generation == request, self.feed == feed, feed != .following || sessionCurrent else { return }
+            let snapshot = try await FeedRequestTrace.$id.withValue(request) {
+                try await fetch(feed: feed, page: 1)
+            }
+            FeedRequestTrace.record("parsed rows=\(snapshot.topics.count)", request: request)
+            guard canCommit(request, generation: request, feed: feed) else { return }
+            let unchanged = cache[feed].map { $0.topics == snapshot.topics } ?? false
             cache[feed] = snapshot
             topics = snapshot.topics
             hasMore = snapshot.hasMore
             paginationID = UUID()
+            refreshStates[feed] = RefreshState(phase: .success(unchanged: unchanged), lastSuccess: Date())
+            FeedRequestTrace.record("committed unchanged=\(unchanged)", request: request)
         } catch {
-            guard !Task.isCancelled, generation == request, self.feed == feed, feed != .following || sessionCurrent else { return }
-            errorMessage = error.localizedDescription
+            guard canCommit(request, generation: request, feed: feed) else { return }
+            if error.isCancellation {
+                refreshStates[feed, default: RefreshState()].phase = .cancelled
+                FeedRequestTrace.record("cancelled", request: request)
+            } else {
+                errorMessage = error.localizedDescription
+                refreshStates[feed, default: RefreshState()].phase = .failed
+                FeedRequestTrace.record("failed", request: request)
+            }
             topics = cache[feed]?.topics ?? []
             hasMore = cache[feed]?.hasMore ?? false
         }
     }
 
-    func loadMore(feed: Feed) async {
+    func loadMore(feed: Feed) async -> Void {
         guard self.feed == feed, !isLoading, hasMore, let previous = cache[feed] else { return }
-        let request = generation
+        let request = UUID()
+        let currentGeneration = generation
+        activeRequest = ActiveRequest(id: request, feed: feed, isFirstPage: false)
         isLoading = true
         moreError = nil
-        defer { if generation == request { isLoading = false } }
+        defer { finishRequest(request) }
         do {
             var next = try await fetch(feed: feed, page: previous.page + 1)
-            guard !Task.isCancelled, generation == request, self.feed == feed, feed != .following || sessionCurrent else { return }
+            guard canCommit(request, generation: currentGeneration, feed: feed) else { return }
             var seen = Set(previous.topics.map(\.id))
             next.topics = previous.topics + next.topics.filter { seen.insert($0.id).inserted }
             cache[feed] = next
@@ -106,9 +163,38 @@ final class HomeViewModel: ObservableObject {
             paginationID = UUID()
         } catch {
             // The footer re-runs its task when it scrolls back into view.
-            guard generation == request, self.feed == feed, !error.isCancellation, feed != .following || sessionCurrent else { return }
+            guard canCommit(request, generation: currentGeneration, feed: feed), !error.isCancellation else { return }
             moreError = error.localizedDescription
         }
+    }
+
+    private func canCommit(_ request: UUID, generation: UUID, feed: Feed) -> Bool {
+        let reason: String?
+        if activeRequest?.id != request || self.generation != generation { reason = "superseded" }
+        else if self.feed != feed { reason = "feed-changed" }
+        else if feed == .following && !sessionCurrent { reason = "session-changed" }
+        else if Task.isCancelled { reason = "cancelled" }
+        else { reason = nil }
+        if let reason {
+            FeedRequestTrace.record("discarded reason=\(reason)", request: request)
+            return false
+        }
+        return true
+    }
+
+    private func finishRequest(_ request: UUID) -> Void {
+        guard let active = activeRequest, active.id == request else { return }
+        if active.isFirstPage, refreshStates[active.feed]?.phase == .refreshing {
+            refreshStates[active.feed, default: RefreshState()].phase = .cancelled
+        }
+        activeRequest = nil
+        isLoading = false
+    }
+
+    private func invalidateActiveRequest() -> Void {
+        guard let active = activeRequest else { return }
+        FeedRequestTrace.record("superseded", request: active.id)
+        finishRequest(active.id)
     }
 
     private func fetch(feed: Feed, page: Int) async throws -> Snapshot {
