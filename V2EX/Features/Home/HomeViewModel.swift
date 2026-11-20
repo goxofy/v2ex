@@ -24,11 +24,13 @@ final class HomeViewModel: ObservableObject {
     private weak var webSession: V2EXSessionStore?
     private var cookie = ""
     private var base = V2EXEndpoint.base
+    private let client: V2EXClient
     private let fetchFollowing: (URL, Int, String) async throws -> FollowingPage
 
-    init(fetchFollowing: @escaping (URL, Int, String) async throws -> FollowingPage = { base, page, cookie in
+    init(client: V2EXClient = .shared, fetchFollowing: @escaping (URL, Int, String) async throws -> FollowingPage = { base, page, cookie in
         try await FollowingService(base: base).topics(page: page, cookie: cookie)
     }) {
+        self.client = client
         self.fetchFollowing = fetchFollowing
     }
 
@@ -112,9 +114,9 @@ final class HomeViewModel: ObservableObject {
     private func fetch(feed: Feed, page: Int) async throws -> Snapshot {
         switch feed {
         case .hot:
-            return Snapshot(topics: try await V2EXClient.shared.hotTopics(), page: 1, hasMore: false)
+            return Snapshot(topics: try await client.hotTopics(), page: 1, hasMore: false)
         case .r2:
-            return Snapshot(topics: try await V2EXClient.shared.r2Topics(), page: 1, hasMore: false)
+            return Snapshot(topics: try await client.r2Topics(), page: 1, hasMore: false)
         case .hackerNews:
             return Snapshot(topics: [], page: 1, hasMore: false)
         case .following:
@@ -125,7 +127,7 @@ final class HomeViewModel: ObservableObject {
         case .all, .node:
             let node: String?
             if case .node(let name, _) = feed { node = name } else { node = nil }
-            let result = try await V2EXClient.shared.publicTopicPage(node: node, page: page)
+            let result = try await client.publicTopicPage(node: node, page: page)
             return Snapshot(topics: result.topics, page: page, hasMore: result.hasMore)
         }
     }

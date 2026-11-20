@@ -112,6 +112,12 @@ struct HomeView: View {
         } else {
         ScrollView {
             LazyVStack(spacing: 10) {
+                if model.feed == feed, let message = model.errorMessage, !visibleTopics.isEmpty {
+                    EmptyStateCard(icon: "wifi.exclamationmark", title: "刷新失败，当前显示上次内容", message: message,
+                                   actionTitle: "重试") {
+                        Task { await model.load(feed: feed, session: session, force: true) }
+                    }
+                }
                 if let message = model.errorMessage, visibleTopics.isEmpty {
                     EmptyStateCard(icon: "wifi.exclamationmark", title: "没能加载", message: message,
                                    actionTitle: "重试") {

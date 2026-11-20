@@ -108,6 +108,124 @@ final class FollowingTests: XCTestCase {
         }
     }
 
+    private func publicClient(_ handler: @escaping (URLRequest) -> (Int, [String: String], String)) -> V2EXClient {
+        FollowingProtocol.handler = handler
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FollowingProtocol.self]
+        return V2EXClient(webSession: URLSession(configuration: configuration))
+    }
+
+    private static func publicPage(_ ids: [Int], next: String? = nil) -> String {
+        let rows = ids.map { row($0).replacingOccurrences(of: "<a href=\"/t/", with: "<a class=\"topic-link\" href=\"/t/") }.joined()
+        return "<div id=\"Main\">\(rows)\(next.map { "<a href=\"\($0)\">Next</a>" } ?? "")</div>"
+    }
+
+    func testPublicFeedsBypassHTTPCacheAndKeepQueryParameters() async throws -> Void {
+        var requests: [URLRequest] = []
+        let client = publicClient { request in
+            requests.append(request)
+            return (200, ["Cache-Control": "public, max-age=86400"], Self.publicPage(Array(1...12)))
+        }
+        _ = try await client.r2Topics()
+        _ = try await client.r2Topics()
+        _ = try await client.publicTopicPage(page: 1)
+        _ = try await client.publicTopicPage(node: "programmer", page: 2)
+        _ = try await client.hotTopics()
+        XCTAssertEqual(requests.count, 5)
+        let urls = try requests.map { try XCTUnwrap(URLComponents(url: XCTUnwrap($0.url), resolvingAgainstBaseURL: false)) }
+        XCTAssertEqual(urls.map(\.path), ["/", "/", "/recent", "/go/programmer", "/"])
+        XCTAssertEqual(urls[0].queryItems?.first { $0.name == "tab" }?.value, "r2")
+        XCTAssertEqual(urls[4].queryItems?.first { $0.name == "tab" }?.value, "hot")
+        XCTAssertEqual(urls[2].queryItems?.first { $0.name == "p" }?.value, "1")
+        XCTAssertEqual(urls[3].queryItems?.first { $0.name == "p" }?.value, "2")
+        let keys = urls.compactMap { $0.queryItems?.first { $0.name == "_" }?.value }
+        XCTAssertEqual(Set(keys).count, requests.count)
+        for request in requests {
+            XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache, no-store")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
+        }
+    }
+
+    func testSameR2ClientReadsChangedRowsWithoutRestart() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            return (200, [:], Self.publicPage(count == 1 ? [9, 3] : [4, 10]))
+        }
+        let first = try await client.r2Topics()
+        let second = try await client.r2Topics()
+        XCTAssertEqual(first.map(\.id), [9, 3])
+        XCTAssertEqual(second.map(\.id), [4, 10])
+    }
+
+    @MainActor
+    func testR2ForceRefreshReplacesSnapshotInSameModelAfterFailure() async throws -> Void {
+        var count = 0
+        let client = publicClient { _ in
+            count += 1
+            if count == 2 { return (503, [:], "unavailable") }
+            return (200, [:], Self.publicPage(count == 1 ? [9, 3] : [4, 10]))
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .r2, session: session)
+        XCTAssertEqual(model.topics.map(\.id), [9, 3])
+        await model.load(feed: .r2, session: session)
+        XCTAssertEqual(count, 1, "Ordinary tab selection may reuse the snapshot")
+        await model.load(feed: .r2, session: session, force: true)
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(model.topics.map(\.id), [9, 3])
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertFalse(model.isLoading)
+        await model.load(feed: .r2, session: session, force: true)
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(model.topics.map(\.id), [4, 10])
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testAllRefreshResetsPaginationAndKeepsExistingRowsOnFailure() async throws -> Void {
+        var requests: [URLRequest] = []
+        let client = publicClient { request in
+            requests.append(request)
+            switch requests.count {
+            case 1: return (200, [:], Self.publicPage([9], next: "/recent?p=2"))
+            case 2: return (200, [:], Self.publicPage([3]))
+            case 3: return (503, [:], "unavailable")
+            default: return (200, [:], Self.publicPage([10], next: "/recent?p=2"))
+            }
+        }
+        let session = V2EXSessionStore(inMemory: true)
+        let model = HomeViewModel(client: client)
+        await model.load(feed: .all, session: session)
+        XCTAssertTrue(model.hasMore)
+        await model.loadMore(feed: .all)
+        XCTAssertEqual(model.topics.map(\.id), [9, 3])
+        XCTAssertFalse(model.hasMore)
+        await model.load(feed: .all, session: session, force: true)
+        XCTAssertEqual(model.topics.map(\.id), [9, 3])
+        XCTAssertNotNil(model.errorMessage)
+        await model.load(feed: .all, session: session, force: true)
+        XCTAssertEqual(model.topics.map(\.id), [10])
+        XCTAssertTrue(model.hasMore)
+        XCTAssertNil(model.errorMessage)
+        let pages = requests.compactMap { request in
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+                .queryItems?.first { $0.name == "p" }?.value
+        }
+        XCTAssertEqual(pages, ["1", "2", "1", "1"])
+    }
+
+    func testPublicFeedHTTPErrorCannotReturnStaleRowsAsSuccess() async -> Void {
+        let client = publicClient { _ in (503, [:], Self.publicPage([9])) }
+        do {
+            _ = try await client.r2Topics()
+            XCTFail("HTTP errors must not be parsed as a successful ranking")
+        } catch { }
+    }
+
     @MainActor
     func testFollowingPaginationUsesSessionAndPreservesOrder() async throws -> Void {
         let session = V2EXSessionStore(inMemory: true)
