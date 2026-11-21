@@ -23,7 +23,7 @@ def main() -> None:
                      "Storage/TopicMoveStore.swift", "Storage/V2EXSessionStore.swift",
                      "Storage/HomeTabsStore.swift", "Features/Nodes/NodeCatalog.swift",
                      "Networking/FollowingService.swift", "Features/Home/HomeViewModel.swift",
-                     "Features/Home/HomeRefreshFeedback.swift"]:
+                     "Features/Home/HomeRefreshFeedback.swift", "Features/Home/HomeNodeLayout.swift"]:
             shutil.copy2(root / "V2EX" / name, sources)
         for name in ["ReplySubmissionTests.swift", "NodeFollowingTests.swift", "TopicMoveTests.swift", "TopicMoveStoreTests.swift", "HomeTabsTests.swift", "FollowingTests.swift"]:
             shutil.copy2(root / "V2EXTests" / name, tests)

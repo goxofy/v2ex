@@ -19,6 +19,9 @@ struct HomeView: View {
 
     /// Per-feed scroll offsets, so swiping between categories doesn't lose your place.
     @State private var scrollPositions: [HomeViewModel.Feed: ScrollPosition] = [:]
+    @State private var collapsedNodes: [HomeViewModel.Feed: Bool] = [:]
+    @State private var nodeBarHeight: CGFloat = 112
+    private var nodesCollapsed: Bool { collapsedNodes[model.feed] ?? false }
     /// `.task` 会在从话题详情返回时重新启动。记录已经消费过的打开请求，
     /// 避免把用户当前分类重复重置为请求最初携带的「全部」。
     @State private var handledRequestID: UUID?
@@ -35,6 +38,20 @@ struct HomeView: View {
         TabView(selection: $model.feed) {
             ForEach(feeds, id: \.self) { feed in
                 feedPage(feed)
+                    .onScrollGeometryChange(for: HomeNodeScrollSample.self) { geometry in
+                        HomeNodeScrollSample(
+                            offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                            topInset: geometry.contentInsets.top,
+                            viewportHeight: geometry.containerSize.height
+                        )
+                    } action: { previous, current in
+                        guard model.feed == feed else { return }
+                        let collapsed = current.collapsed(after: previous, wasCollapsed: nodesCollapsed)
+                        guard collapsed != nodesCollapsed else { return }
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+                            collapsedNodes[feed] = collapsed
+                        }
+                    }
                     .tag(feed)
             }
         }
@@ -116,30 +133,39 @@ struct HomeView: View {
 
     private var feedFilterBar: some View {
         HStack(spacing: 4) {
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHGrid(rows: Array(repeating: GridItem(.fixed(44), spacing: 4), count: 3), spacing: 8) {
-                        ForEach(feeds, id: \.self) { feed in
-                            FilterChip(title: feed.title, isSelected: model.feed == feed) { model.feed = feed }
-                                .lineLimit(1)
-                                .frame(maxWidth: 180)
+            GeometryReader { geometry in
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HomeNodeFlowLayout(
+                            viewportWidth: max(0, geometry.size.width - Theme.Metric.screenPadding * 2),
+                            maxRows: nodesCollapsed ? 1 : 3
+                        ) {
+                            ForEach(feeds, id: \.self) { feed in
+                                FilterChip(title: feed.title, isSelected: model.feed == feed, minimumHeight: 36) {
+                                    model.feed = feed
+                                }
+                                .fixedSize()
                                 .accessibilityLabel(feed.title)
                                 .id(feed)
+                            }
+                        }
+                        .padding(.horizontal, Theme.Metric.screenPadding)
+                        .padding(.vertical, 2)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            guard nodeBarHeight != height else { return }
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { nodeBarHeight = height }
                         }
                     }
-                    .padding(.horizontal, Theme.Metric.screenPadding)
-                    .padding(.vertical, 2)
-                }
-                .frame(height: 144)
-                .scrollClipDisabled()
-                .accessibilityHint("三行节点列表，可左右滑动查看更多节点")
-                .onChange(of: model.feed, initial: true) { _, selected in
-                    proxy.scrollTo(selected, anchor: .center)
-                }
-                .onChange(of: feeds) { _, _ in
-                    proxy.scrollTo(model.feed, anchor: .center)
+                    .accessibilityHint(nodesCollapsed ? "单行节点列表，可左右滑动" : "最多三行节点列表，可左右滑动")
+                    .task(id: HomeNodeRailIdentity(feed: model.feed, feeds: feeds, collapsed: nodesCollapsed, width: geometry.size.width)) {
+                        // Wait for the new flow positions before revealing the selected chip.
+                        await Task.yield()
+                        guard !Task.isCancelled else { return }
+                        proxy.scrollTo(model.feed, anchor: .center)
+                    }
                 }
             }
+            .frame(height: nodeBarHeight)
             Button { editingTabs = true } label: { Image(systemName: "slider.horizontal.3").padding(10) }
                 .accessibilityLabel("编辑首页标签")
         }.readableColumn()
@@ -282,6 +308,36 @@ struct HomeView: View {
             get: { scrollPositions[feed] ?? ScrollPosition() },
             set: { scrollPositions[feed] = $0 }
         )
+    }
+}
+
+private struct HomeNodeRailIdentity: Hashable {
+    let feed: HomeFeed
+    let feeds: [HomeFeed]
+    let collapsed: Bool
+    let width: CGFloat
+}
+
+private struct HomeNodeFlowLayout: Layout {
+    let viewportWidth: CGFloat
+    let maxRows: Int
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrangement(subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> Void {
+        let layout = arrangement(subviews)
+        for (index, subview) in subviews.enumerated() {
+            let frame = layout.frames[index]
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func arrangement(_ subviews: Subviews) -> HomeNodeLayout {
+        HomeNodeLayout(sizes: subviews.map { $0.sizeThatFits(.unspecified) },
+                       viewportWidth: viewportWidth, maxRows: maxRows)
     }
 }
 

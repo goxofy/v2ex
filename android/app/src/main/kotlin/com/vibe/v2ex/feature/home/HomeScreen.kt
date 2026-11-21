@@ -16,15 +16,25 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyGridState
-import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainWidth
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -100,13 +110,11 @@ fun HomeScreen(
             initialPage = uiState.currentIndex,
             pageCount = { uiState.feeds.size },
         )
-        val railState = rememberLazyGridState()
+        var nodesCollapsed by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
 
         LaunchedEffect(pagerState.currentPage) {
             viewModel.selectFeed(pagerState.currentPage)
-            val target = pagerState.currentPage.coerceIn(0, (uiState.feeds.lastIndex).coerceAtLeast(0))
-            railState.animateScrollToItem(target)
         }
 
         Column(
@@ -152,7 +160,7 @@ fun HomeScreen(
                     FeedChipRail(
                         feeds = uiState.feeds,
                         selectedIndex = pagerState.currentPage,
-                        railState = railState,
+                        collapsed = nodesCollapsed,
                         onSelect = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
                     )
                 }
@@ -175,6 +183,9 @@ fun HomeScreen(
                         hasMore = uiState.hasMoreByFeed[feed.key] == true,
                         paginationToken = uiState.paginationTokensByFeed[feed.key] ?: 0L,
                         isActive = pagerState.currentPage == page,
+                        onNodesCollapsed = { collapsed ->
+                            if (pagerState.currentPage == page) nodesCollapsed = collapsed
+                        },
                         cachedAt = uiState.cachedAtByFeed[feed.key],
                         emptyMessage = if (feed == HomeFeed.Following) "关注的人还没有发布话题" else "暂无话题",
                         featuredBadge = when (feed) {
@@ -208,50 +219,76 @@ fun HomeScreen(
 private fun FeedChipRail(
     feeds: List<HomeFeed>,
     selectedIndex: Int,
-    railState: LazyGridState,
+    collapsed: Boolean,
     onSelect: (Int) -> Unit,
 ): Unit {
     val dark = LocalV2Dark.current
-    LazyHorizontalGrid(
-        rows = GridCells.Fixed(3),
-        state = railState,
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp).height(140.dp),
-    ) {
-        gridItemsIndexed(feeds, key = { _, feed -> feed.key }) { index, feed ->
-            val selected = index == selectedIndex
-            Box(
-                contentAlignment = Alignment.CenterStart,
-                modifier = Modifier
-                    .height(44.dp)
-                    .widthIn(max = 180.dp)
-                    .semantics { this.selected = selected }
-                    .clickable { onSelect(index) },
-            ) {
-                Text(
-                    text = feed.title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    color = when {
-                        selected -> MaterialTheme.colorScheme.onPrimary
-                        dark -> MaterialTheme.colorScheme.onSurfaceVariant
-                        else -> Color(0xFF3C3C43)
-                    },
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(
-                            when {
-                                selected -> MaterialTheme.colorScheme.primary
-                                dark -> Color(0xFF1C1C1E).copy(alpha = 0.9f)
-                                else -> Color.White.copy(alpha = 0.85f)
-                            },
-                        )
-                        .padding(horizontal = 15.dp, vertical = 7.dp),
-                )
+    val scrollState = rememberScrollState()
+    val requesters = remember(feeds) { feeds.map { BringIntoViewRequester() } }
+    BoxWithConstraints(Modifier.fillMaxWidth().animateContentSize(tween(220))) {
+        val density = LocalDensity.current
+        val viewportWidth = with(density) { (maxWidth - 32.dp).roundToPx().coerceAtLeast(0) }
+        val gap = with(density) { 6.dp.roundToPx() }
+        val rowGap = with(density) { 2.dp.roundToPx() }
+        LaunchedEffect(selectedIndex, collapsed, viewportWidth, requesters) {
+            // Reveal the selection after the new row positions have been measured.
+            withFrameNanos { }
+            requesters.getOrNull(selectedIndex)?.bringIntoView()
+        }
+        Layout(
+            modifier = Modifier.horizontalScroll(scrollState).padding(horizontal = 16.dp, vertical = 2.dp),
+            content = {
+                feeds.forEachIndexed { index, feed ->
+                    key(feed.key) {
+                        val selected = index == selectedIndex
+                        Box(
+                            contentAlignment = Alignment.CenterStart,
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .bringIntoViewRequester(requesters[index])
+                                .semantics { this.selected = selected }
+                                .clickable { onSelect(index) },
+                        ) {
+                            Text(
+                                text = feed.title,
+                                maxLines = 1,
+                                softWrap = false,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = when {
+                                    selected -> MaterialTheme.colorScheme.onPrimary
+                                    dark -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    else -> Color(0xFF3C3C43)
+                                },
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(
+                                        when {
+                                            selected -> MaterialTheme.colorScheme.primary
+                                            dark -> Color(0xFF1C1C1E).copy(alpha = 0.9f)
+                                            else -> Color.White.copy(alpha = 0.85f)
+                                        },
+                                    )
+                                    .padding(horizontal = 15.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
+                }
+            },
+        ) { measurables, constraints ->
+            val placeables = measurables.map { it.measure(Constraints()) }
+            val flow = HomeNodeLayout(
+                sizes = placeables.map { NodeChipSize(it.width, it.height) },
+                viewportWidth = viewportWidth,
+                maxRows = if (collapsed) 1 else 3,
+                columnSpacing = gap,
+                rowSpacing = rowGap,
+            )
+            layout(constraints.constrainWidth(flow.width), constraints.constrainHeight(flow.height)) {
+                placeables.forEachIndexed { index, placeable ->
+                    val frame = flow.frames[index]
+                    placeable.placeRelative(frame.x, frame.y)
+                }
             }
         }
     }
@@ -267,6 +304,7 @@ private fun FeedPage(
     hasMore: Boolean,
     paginationToken: Long,
     isActive: Boolean,
+    onNodesCollapsed: (Boolean) -> Unit,
     /** 非空 = 列表来自本地快照，值是快照时间（毫秒）。 */
     cachedAt: Long?,
     emptyMessage: String,
@@ -280,6 +318,18 @@ private fun FeedPage(
     onTopicClick: (Long) -> Unit,
     onNodeClick: (String) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    var nodesCollapsed by rememberSaveable { mutableStateOf(false) }
+    val onCollapse by rememberUpdatedState(onNodesCollapsed)
+    val density = LocalDensity.current.density
+    LaunchedEffect(isActive, listState, density) {
+        if (!isActive) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                nodesCollapsed = homeNodesCollapsed(index, offset / density, nodesCollapsed)
+                onCollapse(nodesCollapsed)
+            }
+    }
     PullToRefreshBox(
         isRefreshing = isLoading && topics != null,
         onRefresh = onRefresh,
@@ -310,6 +360,7 @@ private fun FeedPage(
             }
             topics.isEmpty() -> {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = TAB_BAR_CLEARANCE),
                 ) {
@@ -354,6 +405,7 @@ private fun FeedPage(
                 val featured = topics.first()
                 val rest = topics.drop(1)
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = 16.dp,
