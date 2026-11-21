@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA21E361FDB8473BBA890101 /* HomeRefreshFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA21E361FDB8473BBA890102 /* HomeRefreshFeedback.swift */; };
 		A225FB651D588B3AFE128702 /* FollowingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6631D99D03F6233E817576A /* FollowingTests.swift */; };
 		E7379462F3AD1FC530E56CAB /* HomeTabsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 541E3C03A297629DF8673134 /* HomeTabsTests.swift */; };
 		F96E3B5A20282905CC82E98B /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4748951529AF4F6030530E /* HomeViewModel.swift */; };
@@ -91,6 +92,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA21E361FDB8473BBA890102 /* HomeRefreshFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeRefreshFeedback.swift; sourceTree = "<group>"; };
 		C6631D99D03F6233E817576A /* FollowingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowingTests.swift; sourceTree = "<group>"; };
 		541E3C03A297629DF8673134 /* HomeTabsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTabsTests.swift; sourceTree = "<group>"; };
 		2F4748951529AF4F6030530E /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
@@ -204,6 +206,7 @@
 			children = (
 				6D3D18A35A705E7C96685502 /* HomeView.swift */,
 				2F4748951529AF4F6030530E /* HomeViewModel.swift */,
+				CA21E361FDB8473BBA890102 /* HomeRefreshFeedback.swift */,
 				E6542731A95BADA2C2164C46 /* HomeTabsEditor.swift */,
 			);
 			path = Home;
@@ -520,6 +523,7 @@
 				C18EAE8CEFEE38E38CC3B246 /* HackerNewsView.swift in Sources */,
 				AA82A2ABA2280EE18F23C7C9 /* HomeView.swift in Sources */,
 				F96E3B5A20282905CC82E98B /* HomeViewModel.swift in Sources */,
+				CA21E361FDB8473BBA890101 /* HomeRefreshFeedback.swift in Sources */,
 				F0363AE4E0EBF3FAF9F1101C /* HomeTabsEditor.swift in Sources */,
 				D57646694597782B32E7FD2A /* LaunchAnimationView.swift in Sources */,
 				CC19FE500CF1C1A1BAA2F23D /* Models.swift in Sources */,

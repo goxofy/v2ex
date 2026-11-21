@@ -19,6 +19,82 @@ final class FollowingTests: XCTestCase {
         return "<div id='Main'><div class='box'><a href='/my/following'>特别关注</a>\(rows)\(pagination)</div></div>"
     }
 
+    func testRefreshFeedbackIncludesSuccessfulFetchTime() throws -> Void {
+        let date = Date(timeIntervalSince1970: 100)
+        let feedback = try XCTUnwrap(HomeRefreshFeedback(
+            feed: .r2, previous: .init(phase: .refreshing),
+            current: .init(phase: .success(unchanged: false), lastSuccess: date)
+        ))
+        XCTAssertEqual(feedback.feed, .r2)
+        XCTAssertEqual(feedback.title, "已获取列表")
+        XCTAssertEqual(feedback.lastSuccess, date)
+    }
+
+    func testUnchangedRefreshStillProducesNewFeedback() throws -> Void {
+        let old = Date(timeIntervalSince1970: 100)
+        let current = HomeViewModel.RefreshState(phase: .success(unchanged: true), lastSuccess: old.addingTimeInterval(1))
+        let feedback = try XCTUnwrap(HomeRefreshFeedback(
+            feed: .r2, previous: .init(phase: .success(unchanged: true), lastSuccess: old), current: current
+        ))
+        XCTAssertEqual(feedback.title, "已获取，列表无变化")
+        XCTAssertEqual(feedback.lastSuccess, current.lastSuccess)
+    }
+
+    func testCachedRefreshStateDoesNotReplayFeedback() -> Void {
+        let state = HomeViewModel.RefreshState(phase: .success(unchanged: false), lastSuccess: Date())
+        XCTAssertNil(HomeRefreshFeedback(feed: .all, previous: state, current: state))
+        XCTAssertNil(HomeRefreshFeedback(feed: .all, previous: state, current: .init(phase: .success(unchanged: false))))
+        XCTAssertNil(HomeRefreshFeedback(feed: .all, previous: nil, current: .init(phase: .success(unchanged: false))))
+    }
+
+    func testIdleAndLoadingDoNotProduceFeedback() -> Void {
+        for phase: HomeViewModel.RefreshState.Phase in [.idle, .refreshing] {
+            XCTAssertNil(HomeRefreshFeedback(feed: .all, previous: nil, current: .init(phase: phase)))
+            XCTAssertNil(HomeRefreshFeedback.retryMessage(error: nil, phase: phase))
+        }
+    }
+
+    func testFailureFeedbackPreservesPreviousSuccessTime() throws -> Void {
+        let date = Date(timeIntervalSince1970: 100)
+        let failed = HomeViewModel.RefreshState(phase: .failed, lastSuccess: date)
+        let feedback = try XCTUnwrap(HomeRefreshFeedback(
+            feed: .following, previous: .init(phase: .refreshing, lastSuccess: date), current: failed
+        ))
+        XCTAssertEqual(feedback.title, "刷新失败，可在列表中重试")
+        XCTAssertEqual(feedback.lastSuccess, date)
+        XCTAssertNil(HomeRefreshFeedback(feed: .following, previous: failed, current: failed))
+        XCTAssertEqual(HomeRefreshFeedback.retryMessage(error: "Network error", phase: .failed), "Network error")
+    }
+
+    func testCancellationKeepsRetryReachableWithoutError() throws -> Void {
+        let cancelled = HomeViewModel.RefreshState(phase: .cancelled)
+        let feedback = try XCTUnwrap(HomeRefreshFeedback(
+            feed: .r2, previous: .init(phase: .refreshing), current: cancelled
+        ))
+        XCTAssertEqual(feedback.title, "刷新已取消，可在列表中重试")
+        XCTAssertNil(feedback.lastSuccess)
+        XCTAssertNil(HomeRefreshFeedback(feed: .r2, previous: cancelled, current: cancelled))
+        XCTAssertEqual(HomeRefreshFeedback.retryMessage(error: nil, phase: .cancelled), "刷新已取消，请重试")
+        XCTAssertEqual(HomeRefreshFeedback.retryMessage(error: "Specific error", phase: .cancelled), "Specific error")
+    }
+
+    func testFailedStateKeepsRetryReachableAfterErrorIsCleared() -> Void {
+        XCTAssertEqual(HomeRefreshFeedback.retryMessage(error: nil, phase: .failed), "刷新失败，请重试")
+        XCTAssertEqual(HomeRefreshFeedback.retryMessage(error: " \n", phase: .failed), "刷新失败，请重试")
+    }
+
+    func testSuccessClearsRetryFallback() -> Void {
+        XCTAssertNil(HomeRefreshFeedback.retryMessage(error: nil, phase: .success(unchanged: true)))
+        XCTAssertNil(HomeRefreshFeedback.retryMessage(error: nil, phase: .success(unchanged: false)))
+    }
+
+    func testSeparateFeedbackEventsHaveDifferentTimerIdentities() throws -> Void {
+        let state = HomeViewModel.RefreshState(phase: .success(unchanged: false), lastSuccess: Date())
+        let first = try XCTUnwrap(HomeRefreshFeedback(feed: .all, previous: nil, current: state))
+        let second = try XCTUnwrap(HomeRefreshFeedback(feed: .all, previous: nil, current: state))
+        XCTAssertNotEqual(first.id, second.id)
+    }
+
     func testDesktopRowsWithoutTopicLinkAndWebsiteOrder() throws -> Void {
         let result = try FollowingPage(html: Self.page(Self.row(9) + Self.row(3) + Self.row(9), next: 2), base: base, page: 1)
         XCTAssertEqual(result.topics.map(\.id), [9, 3])

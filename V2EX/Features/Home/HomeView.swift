@@ -8,6 +8,9 @@ struct HomeView: View {
     @StateObject private var tabs = HomeTabsStore()
     @EnvironmentObject private var session: V2EXSessionStore
     @State private var editingTabs = false
+    @State private var refreshFeedback: HomeRefreshFeedback?
+    @State private var isHomeVisible = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var followed: FollowedNodesStore
     @EnvironmentObject private var moderation: ModerationStore
     @EnvironmentObject private var readState: ReadStateStore
@@ -42,6 +45,7 @@ struct HomeView: View {
         .navigationTitle("V2EX")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .overlay(alignment: .top) { refreshToast }
         .topSafeAreaBar(spacing: 0) { feedFilterBar }
         .sheet(isPresented: $editingTabs) {
             HomeTabsEditor(store: tabs, followedNodes: followed.names, hackerNews: settings.hackerNewsEnabled)
@@ -78,7 +82,25 @@ struct HomeView: View {
             }
         }
         .onChange(of: model.feed) { _, newFeed in
+            refreshFeedback = nil
             Task { await model.load(feed: newFeed, session: session) }
+        }
+        .onChange(of: model.refreshStates) { previous, current in
+            let feed = model.feed
+            guard isHomeVisible, let state = current[feed] else {
+                refreshFeedback = nil
+                return
+            }
+            if state.phase == .refreshing {
+                refreshFeedback = nil
+            } else if let feedback = HomeRefreshFeedback(feed: feed, previous: previous[feed], current: state) {
+                refreshFeedback = feedback
+            }
+        }
+        .onAppear { isHomeVisible = true }
+        .onDisappear {
+            isHomeVisible = false
+            refreshFeedback = nil
         }
     }
 
@@ -94,9 +116,29 @@ struct HomeView: View {
 
     private var feedFilterBar: some View {
         HStack(spacing: 4) {
-            ChipRail(items: feeds, selected: model.feed) { feed in
-                FilterChip(title: feed.title, isSelected: model.feed == feed) { model.feed = feed }
-                    .id(feed)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHGrid(rows: Array(repeating: GridItem(.fixed(44), spacing: 4), count: 3), spacing: 8) {
+                        ForEach(feeds, id: \.self) { feed in
+                            FilterChip(title: feed.title, isSelected: model.feed == feed) { model.feed = feed }
+                                .lineLimit(1)
+                                .frame(maxWidth: 180)
+                                .accessibilityLabel(feed.title)
+                                .id(feed)
+                        }
+                    }
+                    .padding(.horizontal, Theme.Metric.screenPadding)
+                    .padding(.vertical, 2)
+                }
+                .frame(height: 144)
+                .scrollClipDisabled()
+                .accessibilityHint("三行节点列表，可左右滑动查看更多节点")
+                .onChange(of: model.feed, initial: true) { _, selected in
+                    proxy.scrollTo(selected, anchor: .center)
+                }
+                .onChange(of: feeds) { _, _ in
+                    proxy.scrollTo(model.feed, anchor: .center)
+                }
             }
             Button { editingTabs = true } label: { Image(systemName: "slider.horizontal.3").padding(10) }
                 .accessibilityLabel("编辑首页标签")
@@ -105,6 +147,9 @@ struct HomeView: View {
 
     @ViewBuilder
     private func feedPage(_ feed: HomeViewModel.Feed) -> some View {
+        let refreshError = model.feed == feed
+            ? HomeRefreshFeedback.retryMessage(error: model.errorMessage, phase: model.refreshState(for: feed).phase)
+            : nil
         if feed == .hackerNews {
             // 数据模型和 V2EX 完全不同（无节点、无附言、评论是嵌套树），
             // 所以自成一页而不是塞进上面的话题列表。
@@ -112,14 +157,13 @@ struct HomeView: View {
         } else {
         ScrollView {
             LazyVStack(spacing: 10) {
-                if model.feed == feed { refreshStatus(for: feed) }
-                if model.feed == feed, let message = model.errorMessage, !visibleTopics.isEmpty {
+                if let message = refreshError, !visibleTopics.isEmpty {
                     EmptyStateCard(icon: "wifi.exclamationmark", title: "刷新失败，当前显示上次内容", message: message,
                                    actionTitle: "重试") {
                         Task { await model.refresh(feed: feed, session: session, source: .retry) }
                     }
                 }
-                if let message = model.errorMessage, visibleTopics.isEmpty {
+                if let message = refreshError, visibleTopics.isEmpty {
                     EmptyStateCard(icon: "wifi.exclamationmark", title: "没能加载", message: message,
                                    actionTitle: "重试") {
                         Task { await model.refresh(feed: feed, session: session, source: .retry) }
@@ -200,28 +244,37 @@ struct HomeView: View {
         }
     }
 
-    private func refreshStatus(for feed: HomeViewModel.Feed) -> some View {
-        let state = model.refreshState(for: feed)
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                switch state.phase {
-                case .idle: Text("尚未获取列表")
-                case .refreshing: Text("正在刷新…")
-                case .success(let unchanged): Text(unchanged ? "已获取，列表无变化" : "已获取列表")
-                case .failed: Text("刷新失败，保留上次内容")
-                case .cancelled: Text("刷新已取消，可重试")
+    @ViewBuilder
+    private var refreshToast: some View {
+        if let feedback = refreshFeedback, feedback.feed == model.feed {
+            HStack(spacing: 8) {
+                Image(systemName: feedback.icon).foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(feedback.title).foregroundStyle(Theme.ink)
+                    if let date = feedback.lastSuccess {
+                        Text("最近成功获取 \(date.formatted(.dateTime.hour().minute().second()))")
+                            .foregroundStyle(Theme.muted)
+                    }
                 }
-                if let date = state.lastSuccess {
-                    Text("最近成功获取 \(date.formatted(.dateTime.hour().minute().second()))")
+                .font(.footnote)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+            .padding(.horizontal, Theme.Metric.screenPadding)
+            .padding(.top, 8)
+            .accessibilityElement(children: .combine)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+            .task(id: feedback.id) {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                guard refreshFeedback?.id == feedback.id else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                    refreshFeedback = nil
                 }
             }
-            .font(.footnote)
-            .foregroundStyle(Theme.muted)
-            .accessibilityElement(children: .combine)
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
     }
 
     private func scrollBinding(for feed: HomeViewModel.Feed) -> Binding<ScrollPosition> {
