@@ -320,6 +320,7 @@ extension ButtonStyle where Self == PressableRowStyle {
 struct FilterChip: View {
     let title: String
     let isSelected: Bool
+    var minimumHeight: CGFloat = 44
     var action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -347,9 +348,8 @@ struct FilterChip: View {
                     )
                 }
                 .contentShape(Capsule())
-                // The visible capsule stays compact, while the actual target
-                // meets Apple's 44pt minimum.
-                .frame(minHeight: 44)
+                // Default to a 44pt target; dense home tabs opt into a compact row.
+                .frame(minHeight: minimumHeight)
                 .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: isSelected)
         }
         .buttonStyle(ChipPressStyle())
