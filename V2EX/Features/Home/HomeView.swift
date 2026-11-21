@@ -219,11 +219,6 @@ struct HomeView: View {
             .foregroundStyle(Theme.muted)
             .accessibilityElement(children: .combine)
             Spacer(minLength: 0)
-            Button("立即刷新", systemImage: "arrow.clockwise") {
-                Task { await model.refresh(feed: feed, session: session, source: .button) }
-            }
-            .font(.footnote)
-            .disabled(state.phase == .refreshing)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
