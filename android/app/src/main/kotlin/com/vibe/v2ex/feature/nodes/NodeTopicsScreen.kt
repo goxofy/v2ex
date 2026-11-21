@@ -80,6 +80,8 @@ fun NodeTopicsScreen(
     viewModel: NodeTopicsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val moves = com.vibe.v2ex.feature.topic.topicMoves()
+    val movedNodes by moves.movedNodes.collectAsState()
     uiState.followError?.let { message ->
         AlertDialog(
             onDismissRequest = viewModel::dismissFollowError,
@@ -175,7 +177,9 @@ fun NodeTopicsScreen(
                         OfflineNoticeBar(Modifier.padding(bottom = 10.dp), cachedAt = cachedAt)
                     }
                 }
-                val visibleTopics = uiState.visibleTopics
+                val visibleTopics = uiState.visibleTopics.filter { topic ->
+                    movedNodes[topic.id]?.let { it.name == uiState.nodeName } ?: true
+                }
                 when {
                     uiState.raw.isEmpty() && uiState.isLoading -> {
                         item(key = "loading") {

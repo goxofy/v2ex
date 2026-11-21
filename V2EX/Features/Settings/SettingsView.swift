@@ -103,6 +103,14 @@ struct SettingsView: View {
                             ) { Chevron() }
                         }
                         .buttonStyle(.row)
+                        RowSeparator(leadingInset: 54)
+                        NavigationLink {
+                            TopicMoveDiagnosticsView()
+                        } label: {
+                            SettingsRow(icon: "stethoscope", iconColor: Theme.accent,
+                                title: "网页权限诊断", subtitle: "只读检查话题权限，不执行移动") { Chevron() }
+                        }
+                        .buttonStyle(.row)
                     }
                 }
 

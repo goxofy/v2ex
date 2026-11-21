@@ -390,6 +390,8 @@ private fun ScopeChipsRow(
 @Composable
 private fun SearchResultRow(hit: SoV2exHit, onClick: () -> Unit) {
     val source = hit.source
+    val movedNodes by com.vibe.v2ex.feature.topic.topicMoves().movedNodes.collectAsState()
+    val nodeTitle = movedNodes[source.id]?.title ?: source.nodeName?.let(NodeCatalog::displayName)
     val title = hit.highlight?.title?.firstOrNull()?.let(::highlightFragment)
         ?: AnnotatedString(source.title)
     val preview = hit.highlight?.content?.firstOrNull()?.let(::highlightFragment)
@@ -419,9 +421,9 @@ private fun SearchResultRow(hit: SoV2exHit, onClick: () -> Unit) {
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            source.nodeName?.takeIf(String::isNotBlank)?.let { node ->
+            nodeTitle?.takeIf(String::isNotBlank)?.let { title ->
                 Text(
-                    text = NodeCatalog.displayName(node),
+                    text = title,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,

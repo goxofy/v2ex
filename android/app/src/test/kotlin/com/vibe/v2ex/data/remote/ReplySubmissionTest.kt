@@ -53,6 +53,102 @@ class ReplySubmissionTest {
     }
 
     @Test
+    fun mobileLayoutWithoutMainCanSubmitAndConfirm(): Unit = runBlocking {
+        enqueue(mobilePage())
+        enqueue(mobilePage(reply(101, "alice", "hello")))
+        val result = submit()
+        assertTrue("Mobile reply failed: ${result.exceptionOrNull()}", result.isSuccess)
+        collectRequests()
+        assertEquals(listOf("GET", "POST"), requests.map { it.method })
+    }
+
+    @Test
+    fun mobilePaginationAndReplyConfirmationUseTheSameContentRegion(): Unit = runBlocking {
+        enqueue(mobilePage("<input class='page_input' max='2'>"))
+        enqueue(mobilePage(reply(200, "bob", "old last page") + "<input class='page_input' max='2'>"))
+        redirect(302, "/t/42#reply3")
+        enqueue(mobilePage("<a href='/t/42?p=3'>3</a>"))
+        enqueue(mobilePage(reply(201, "alice", "hello") + "<input class='page_input' max='3'>"))
+        val result = submit()
+        assertTrue("Mobile pagination failed: ${result.exceptionOrNull()}", result.isSuccess)
+        collectRequests()
+        assertEquals(listOf("GET", "GET", "POST", "GET", "GET"), requests.map { it.method })
+        assertEquals("/t/42?p=2", requests[1].target)
+        assertEquals("/t/42?p=3", requests[4].target)
+    }
+
+    @Test
+    fun savedAndroidUserAgentIsPreservedForFormPostAndConfirmation(): Unit = runBlocking {
+        val browserAgent = "Mozilla/5.0 (Linux; Android 16; fixture; wv) AppleWebKit/537.36 Mobile Safari/537.36"
+        enqueue(mobilePage())
+        redirect(302, "/t/42#reply2")
+        enqueue(mobilePage(reply(101, "alice", "hello")))
+        assertTrue(submit(userAgent = browserAgent).isSuccess)
+        collectRequests()
+        assertEquals(listOf("GET", "POST", "GET"), requests.map { it.method })
+        requests.forEach {
+            assertEquals(browserAgent, it.headers["User-Agent"])
+            assertEquals("A=session", it.headers["Cookie"])
+        }
+    }
+
+    @Test
+    fun legacySessionWithoutSavedUserAgentKeepsPreviousIdentity(): Unit = runBlocking {
+        enqueue(mobilePage())
+        enqueue(mobilePage(reply(101, "alice", "hello")))
+        assertTrue(submit(userAgent = null).isSuccess)
+        collectRequests()
+        assertTrue(requests.all { it.headers["User-Agent"].orEmpty().contains("iPhone") })
+    }
+
+    @Test
+    fun malformedUserAgentNeverSendsCredentials(): Unit = runBlocking {
+        for (userAgent in listOf("", "invalid\r\nInjected: value", "non-ascii-中文")) {
+            assertTrue(submit(userAgent = userAgent).isFailure)
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun mobileOldMatchingReplyCannotConfirmANewSubmission(): Unit = runBlocking {
+        val old = mobilePage(reply(500, "alice", "hello"))
+        enqueue(old)
+        repeat(4) { enqueue(old) }
+        assertTrue(submit().exceptionOrNull() is ReplyUnconfirmedException)
+        collectRequests()
+        assertEquals(listOf("GET", "POST", "GET", "GET", "GET"), requests.map { it.method })
+    }
+
+    @Test
+    fun htmlChallengeIsReportedInsteadOfMissingReplyForm(): Unit = runBlocking {
+        for (html in listOf("<title>Just a moment...</title>", "<title>Attention Required!</title>", "<form id='challenge-form'></form>")) {
+            enqueue(html)
+            val message = submit().exceptionOrNull()?.message.orEmpty()
+            assertTrue(message.contains("网页验证"))
+            assertFalse(message.contains("回复表单"))
+        }
+        collectRequests()
+        assertTrue(requests.all { it.method == "GET" })
+    }
+
+    @Test
+    fun challengeHeaderRejectsOtherwiseValidReplyFormBeforePost(): Unit = runBlocking {
+        server.enqueue(MockResponse.Builder().code(200).body(mobilePage()).addHeader("cf-mitigated", "challenge").build())
+        assertTrue(submit().exceptionOrNull()?.message.orEmpty().contains("网页验证"))
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun challengeAfterPostNeverRetriesSubmission(): Unit = runBlocking {
+        enqueue(mobilePage())
+        enqueue("<title>Just a moment...</title>")
+        val message = submit().exceptionOrNull()?.message.orEmpty()
+        assertTrue(message.contains("避免重复发送"))
+        collectRequests()
+        assertEquals(listOf("GET", "POST"), requests.map { it.method })
+    }
+
+    @Test
     fun direct200WithNewReplySucceeds(): Unit = runBlocking {
         enqueue(page())
         enqueue(page(reply(101, "alice", "hello")))
@@ -600,8 +696,9 @@ class ReplySubmissionTest {
         cookie: String? = "A=session",
         username: String? = "alice",
         httpClient: OkHttpClient = client,
+        userAgent: String? = null,
     ): Result<Unit> = ReplySubmission(httpClient, server.url("/")) { waits.add(it) }
-        .postReply(42, content, cookie, username)
+        .postReply(42, content, cookie, username, userAgent)
 
     private fun redirect(code: Int, location: String): Unit {
         server.enqueue(MockResponse.Builder().code(code).addHeader("Location", location).build())
@@ -619,6 +716,10 @@ class ReplySubmissionTest {
 
     private fun reply(id: Long, author: String, content: String): String =
         """<div class="cell" id="r_$id"><strong><a href="/member/$author">$author</a></strong><span class="no">1</span><div class="reply_content">$content</div></div>"""
+
+    private fun mobilePage(extra: String = ""): String = page(extra)
+        .replace("<div id=\"Main\">", "<div id=\"Wrapper\"><div class=\"content\">")
+        .replace("</body>", "</div></body>")
 
     private fun page(extra: String = ""): String =
         """<html><body><div id="Main"><div class="box">${reply(100, "bob", "old")}$extra</div><div class="box"><form method="post" action="/t/42"><input name="once" value="123"><textarea name="content"></textarea></form></div></div></body></html>"""

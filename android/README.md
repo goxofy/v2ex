@@ -1,6 +1,6 @@
 # V2EX for Android
 
-> 本目录由上游固定版本导入，来源与许可状态见 [UPSTREAM.md](UPSTREAM.md)。本仓可在一次 Actions 运行中构建 IPA 和 Debug APK，使用方法见[根 README](../README.md#通过-github-actions-构建-ipa-和-apk)。下方保留上游项目介绍；上游 Releases 不是本仓构建产物。
+> 本目录由上游固定版本导入，来源与许可状态见 [UPSTREAM.md](UPSTREAM.md)。本仓提供独立的手动 Actions 分别构建 IPA 和 Release APK，使用方法见[根 README](../README.md#通过-github-actions-构建-ipa-和-apk)。下方保留上游项目介绍；上游 Releases 不是本仓构建产物。
 
 面向个人使用的 V2EX Android 客户端。Kotlin + Jetpack Compose 构建， 数据来自 V2EX API（v1/v2）、网页会话和 sov2ex 搜索。
 
@@ -57,11 +57,11 @@
 ## 构建
 
 ```bash
-# 调试构建
-./gradlew :app:assembleDebug
+# Release 构建（与 Actions 一致）
+./gradlew :app:testDebugUnitTest :app:assembleRelease :app:lintRelease
 
 # 安装到已连接设备/模拟器
-./gradlew :app:installDebug
+./gradlew :app:installRelease
 ```
 
 要求：JDK 17+、Android SDK Platform 37。AGP 9.x 内置 Kotlin 支持（无需单独的 kotlin-android 插件）。
@@ -88,6 +88,7 @@ app/src/main/kotlin/com/vibe/v2ex/
 
 - 浏览话题和公开分页无需登录；通知、当前账号资料与 API 长帖分页需要 Personal Access Token（v2ex.com/settings/tokens）
 - App 内回复、发主题、收藏同步需要网页会话（WebView 登录）；V2EX 无开放的写 API，写操作走与网页相同的表单
+- 回帖兼容官网桌面/手机页面，沿用网页登录保存的浏览器 UA；每次发送最多提交一次，结果不明确时只读取页面确认，失败保留草稿。若提示网页验证或结果待确认，请先到网页查看，不要连续重复发送
 - 官网屏蔽名单和通知未读状态要求网页登录；通知列表还需要同一账号的 Personal Access Token
 - API 频率上限 600 次/小时/IP，「关注」聚合与自动离线均采用串行请求控制配额
 - 折叠屏：外屏与手机一致；展开态为拉伸单列，未做大屏双栏

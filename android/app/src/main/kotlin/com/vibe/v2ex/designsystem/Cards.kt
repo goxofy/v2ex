@@ -238,6 +238,16 @@ fun FeaturedTopicCard(
     badge: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+): Unit {
+    FeaturedTopicCardBody(com.vibe.v2ex.feature.topic.movedTopic(topic), badge, onClick, modifier)
+}
+
+@Composable
+private fun FeaturedTopicCardBody(
+    topic: Topic,
+    badge: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -313,6 +323,17 @@ fun FeaturedTopicCard(
  */
 @Composable
 fun CardTopicRow(
+    topic: Topic,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    dimmed: Boolean = false,
+    trailingBadge: (@Composable () -> Unit)? = null,
+): Unit {
+    CardTopicRowBody(com.vibe.v2ex.feature.topic.movedTopic(topic), onClick, modifier, dimmed, trailingBadge)
+}
+
+@Composable
+private fun CardTopicRowBody(
     topic: Topic,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,

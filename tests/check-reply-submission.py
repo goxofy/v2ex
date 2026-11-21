@@ -18,9 +18,14 @@ def main() -> None:
         sources.mkdir(parents=True)
         tests.mkdir(parents=True)
         for name in ["Networking/V2EXClient.swift", "Networking/ReplySubmission.swift",
-                     "Networking/HTMLContent.swift", "Models/Models.swift"]:
+                     "Networking/HTMLContent.swift", "Models/Models.swift",
+                     "Networking/TopicMovePage.swift", "Networking/TopicMoveService.swift",
+                     "Storage/TopicMoveStore.swift", "Storage/V2EXSessionStore.swift",
+                     "Storage/HomeTabsStore.swift", "Features/Nodes/NodeCatalog.swift",
+                     "Networking/FollowingService.swift", "Features/Home/HomeViewModel.swift",
+                     "Features/Home/HomeRefreshFeedback.swift", "Features/Home/HomeNodeLayout.swift"]:
             shutil.copy2(root / "V2EX" / name, sources)
-        for name in ["ReplySubmissionTests.swift", "NodeFollowingTests.swift"]:
+        for name in ["ReplySubmissionTests.swift", "NodeFollowingTests.swift", "TopicMoveTests.swift", "TopicMoveStoreTests.swift", "HomeTabsTests.swift", "FollowingTests.swift"]:
             shutil.copy2(root / "V2EXTests" / name, tests)
         (package / "Package.swift").write_text('''// swift-tools-version: 5.9
 import PackageDescription
@@ -30,7 +35,8 @@ let package = Package(
     targets: [.target(name: "V2EX"), .testTarget(name: "V2EXTests", dependencies: ["V2EX"])]
 )
 ''')
-        subprocess.run(["swift", "test", "--package-path", str(package)], check=True)
+        env = dict(os.environ, V2EX_MOVE_HTTP_FIXTURE=str(root / "tests/topic-move-http-fixture.py"))
+        subprocess.run(["swift", "test", "--package-path", str(package)], check=True, env=env)
 
 
 if __name__ == "__main__":

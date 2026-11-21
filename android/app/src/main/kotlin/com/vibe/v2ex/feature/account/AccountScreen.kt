@@ -43,6 +43,7 @@ fun AccountScreen(onBack: () -> Unit, viewModel: AccountViewModel = hiltViewMode
         WebLoginScreen(
             onCancel = viewModel::dismissWebLogin,
             onConfirm = viewModel::confirmWebLogin,
+            onReset = viewModel::resetWebLogin,
         )
         return
     }
@@ -118,10 +119,12 @@ fun AccountScreen(onBack: () -> Unit, viewModel: AccountViewModel = hiltViewMode
                     ),
                 ) { Text("退出登录") }
             } else {
-                Button(onClick = viewModel::openWebLogin, modifier = Modifier.fillMaxWidth()) {
-                    Text("在网页中登录")
+                Button(onClick = viewModel::openWebLogin, enabled = !uiState.clearingWebLogin, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (uiState.clearingWebLogin) "正在清理网页登录…" else "在网页中登录")
                 }
             }
+
+            uiState.webLoginError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
             Spacer(modifier = Modifier.height(24.dp))
 

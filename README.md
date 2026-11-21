@@ -10,7 +10,7 @@
 
 - **本仓 IPA / APK**：分别通过 [Build iOS App](https://github.com/goxofy/v2ex/actions/workflows/ios-build.yml) 和 [Build Android App](https://github.com/goxofy/v2ex/actions/workflows/android-build.yml) 手动构建，步骤和签名限制见[构建说明](#通过-github-actions-构建-ipa-和-apk)。
 - **上游 iOS TestFlight 公测**：[testflight.apple.com/join/jUBsFk9u](https://testflight.apple.com/join/jUBsFk9u)，不是本仓 Actions 的产物。
-- **上游 Android 发行版**：[xinghelee/v2ex-android Releases](https://github.com/xinghelee/v2ex-android/releases/latest)（Android 8.0+），与本仓 Debug APK 的签名和包名不同。
+- **上游 Android 发行版**：[xinghelee/v2ex-android Releases](https://github.com/xinghelee/v2ex-android/releases/latest)（Android 8.0+），与本仓 Release APK 的签名不同，不能直接互相覆盖安装。
 
 ## 截图
 
@@ -27,9 +27,10 @@
 
 ## 功能
 
-- **首页**：全部、最热、关注和快捷节点，多分类横向切换并分别记忆滚动位置；社区脉搏聚合当前活跃节点与回复分布
+- **首页**：全部、最热、R2、关注和快捷节点；顶部编辑入口支持所有标签增删、排序、恢复默认，整条栏最多 **15 项**（包括内置标签及启用的 HN），至少保留一项。配置独立保存，不改变官网节点收藏；多分类横向切换并分别记忆滚动位置，社区脉搏聚合当前活跃节点与回复分布
+- **关注信息流**：使用 App 当前网页会话读取 `/my/following`，展示关注用户发布的话题，保留官网顺序并支持分页；不是收藏节点的话题汇总，不需要 PAT。登录失效、验证页、未知页面结构与明确空列表分别处理；只保留当前会话内存缓存，退出或切换账号清空，旧请求不能恢复上一账号的内容
 - **话题**：正文、代码、引用、列表与图片渲染，楼层回复、只看楼主、阅读数、收藏、离线与长帖分页；讨论轨道支持快速跳转关键楼层
-- **节点**：完整节点搜索与分类目录，可编辑、排序和增删首页快捷节点，支持节点话题排序与分页
+- **节点**：完整节点搜索与分类目录，收藏节点与首页标签独立管理，支持节点话题排序与分页
 - **账户**：账号密码、验证码、两步验证或网页登录；会话仅保存在本机 Keychain
 - **通知**：Personal Access Token 驱动，回复、@、感谢分类筛选，支持未读状态和删除
 - **搜索与雷达**：sov2ex 全文索引（话题/回复/用户/节点），命中高亮；可持久追踪关键词、节点与用户
@@ -39,6 +40,27 @@
 - **阅读与外观**：五套主题配色、明暗模式、正文字号、行距和等宽字体可调，可记忆阅读进度并自动离线关注节点
 - **系统智能**：iOS 27 设备端讨论摘要；不可用时可由用户配置 OpenAI 兼容 API，另有 Siri/快捷指令与 Spotlight 集成
 - **交互**：原生悬浮标签栏随滚动收起，列表下拉刷新，点击页面空白处收起键盘
+
+### Android 网页登录与安全验证
+
+- 内置登录页使用系统 Android WebView 的真实 User-Agent，启用 JavaScript、DOM storage 与登录页所需的 Cookie 支持；不伪装 iPhone Safari，不在打开页面或界面重绘时清除验证状态、重复加载网页。
+- 登录页右上角提供「刷新」和「帮助」。验证码持续异常时，可在帮助中选择「重置网页登录」：确认后退出 App 网页账号并清理内置网页 Cookie/站点存储，清理完成才重新加载；不会删除 PAT。普通打开登录页保留站点状态，明确退出账号时才清理。
+- 首次登录在**当前 WebView** 内只读打开一次官网设置页，以同源 `/settings` 路径正常加载、未返回登录/两步验证/挑战页为基础，并核对当前账号后保存最新 Cookie 与实际 UA；不再换用 OkHttp 作为首次登录的确认门槛。**不要求设置页容器、POST 表单、once 或 website/location/bio 字段**，通用设置与个人资料分栏不影响确认；不读取密码或个人资料值，也不依赖退出链接。登录、两步验证和挑战页保持可交互，不自动循环导航。
+- 主页面 HTTP/网络/证书错误、账号变化或未到达设置页不会被判为登录成功；提示附固定诊断码，便于反馈，不包含凭据或页面正文。「刷新」使用只读 GET 重新确认，不重发登录表单。已保存会话仍可后台复查，但挑战、限流和无结论不直接判定账号失效；浏览器登录成功也不代表后续所有原生网络请求都一定被网站放行。
+- **兼容性限制**：App 不绕过 Cloudflare，无法保证内嵌浏览器一定被网站放行。遇到验证循环，请更新 Android System WebView/Chrome，并在验证期间保持网络稳定，避免切换 VPN、代理或网络。系统浏览器可辅助排查，但其中的登录 Cookie 不会自动共享给 App。自动化测试仅验证本地逻辑，不代表真实 Cloudflare 已通过。
+
+### 管理员移动主题（iOS / Android）
+
+- 需要具有相应权限的 **V2EX 网页登录会话**。App 逐话题核实官网权限：可信头部的管理链接可以作为证据；没有该链接时，再只读获取同话题的移动页，只有完整、同源的合法管理表单才能授予权限。这样不依赖手机话题页一定渲染桌面版 MOVE 链接。仅在进入话题详情时检查该话题权限，有权后在右上角 `⋯` 菜单显示「移动主题」；首页、节点、搜索、收藏等列表不显示移动按钮，也不逐项探测权限。支持官网桌面和手机布局。仅登录、配置 PAT、公开 MOD 标识或用户名匹配都不能获得此入口。
+- **iOS 入口不显示时**：打开「设置 → 网络 → 网页权限诊断」，输入话题 ID 后检查。此页面只发 GET，不执行移动；会显示检查阶段及固定原因码（例如 `FORM_HTTP_403`、`TOPIC_STRUCTURE`），区分请求受限、会话失效与解析失败，而不是一律认定没有权限。检查成功会更新同一份入口权限状态。诊断不展示或上传 Cookie、用户名、HTML 和隐藏验证字段。
+- 常用节点多行展示，默认使用官网完整列表；点「编辑」可搜索添加、删除和调整顺序，不限制为四个或固定几个。自定义配置按站点保存在本机，支持清空或恢复官网默认，不上传。
+- 目标节点按名称、英文标识或别名本地搜索，结果紧邻搜索框，在限高区域滚动，不截断为前 60 项。选中后收起结果和键盘，展示已选目标。可选备注位于下方，主提交按钮固定在底部；二次确认居中显示「原节点 → 目标节点」。打开面板和提交前仍会重新核实权限；当前节点变化时停止提交，需重新打开并核对。
+- 每次确认最多发送 **一次 POST**，不会因超时、重定向或服务器错误自动重复移动。正常提交响应（包括同站点、同话题的 `/t/{id}#replyN` 跳转）后关闭面板，轻提示「移动请求已提交」，不再阻塞等待三轮网页确认，也不显示通用的“无法确认移动结果”。提示代表提交响应正常，不代表已经独立核实最终节点。明确拒绝、登录失效、验证页及网络/服务器异常仍会提示；提交异常时禁止本次面板再次提交，需先到网页查看。关闭面板不代表撤销操作。
+- 权限缓存仅在内存中按会话、话题及站点隔离，60 秒内可复用；详情本次访问的入口状态保留至退出或会话变化，不持续轮询。退出/切换账号后失效。权限探测同话题去重、最多两个并发。无法读取权限、离线或页面结构不可信时不授予入口。
+- 正常提交后，详情、列表及搜索节点标签短期显示目标节点，原节点列表暂时过滤已移出条目。此乐观状态仅在内存保留最多 5 分钟；详情额外执行一次非阻塞只读刷新来校正，失败不弹警告，不轮询。只有实际读取的节点才可持久保存（最多 200 条、5 分钟有效），过期回归普通列表数据；列表不会为这些状态逐项请求网页。**不持久保存管理权限**，不把未核实的目标写入永久缓存，不删除用户收藏和离线正文。
+- 默认使用 `https://www.v2ex.com`，不依赖测试域名。iOS 沿用已有自定义 HTTPS 站点设置；不会根据页面跳转把 Cookie 发往其他站点。
+
+测试使用人工页面和本机 HTTP 服务，不会移动真实帖子。管理员与普通账号的真机验收仍需自行完成，建议先在允许测试的话题上核对网页结果。完整 iOS App 构建需要下文所述的新 Xcode SDK，独立网络测试不等于完整 App 编译。
 
 ## 技术要点
 
@@ -74,15 +96,15 @@
 
 1. 在 **Actions** 中选择要构建的平台，再点击 **Run workflow**：
    - **Build iOS App**（`ios-build.yml`）：只构建未签名 IPA，使用 macOS runner。
-   - **Build Android App**（`android-build.yml`）：只构建 Debug APK，使用 Ubuntu runner。
+   - **Build Android App**（`android-build.yml`）：只构建 Release APK（开启混淆和资源压缩），使用 Ubuntu runner。
 2. 选择需要构建的分支并运行。需要两端产物时，分别启动两个 workflow；不会默认同时构建。
 3. 等待对应 workflow 成功，在各自运行页面底部的 **Artifacts** 下载：
    - iOS：`V2EX-unsigned-ipa-<提交 SHA>`，解压得到 `V2EX-unsigned.ipa`。
-   - Android：`V2EX-debug-apk-<提交 SHA>`，解压得到 `app-debug.apk`；`V2EX-android-reports-<提交 SHA>` 为单元测试和 Lint 报告。
+   - Android：`V2EX-release-apk-<提交 SHA>`，解压得到 `app-release.apk`；`V2EX-android-reports-<提交 SHA>` 为单元测试、Release Lint 报告及混淆映射。
 
 两个 workflow 独立触发、独立显示结果，互不调用或等待。**构建 Android 不会启动 iOS，也不受 macOS runner 排队失败影响**；单独构建 iOS 时仍可能遇到 GitHub 的 macOS 容量限制，拆分并不会消除这一平台限制。产物保留 **7 天**；构建入口仅手动触发，不在每次 push 时消耗 runner，也不会自动发布 TestFlight 或 GitHub Release。
 
-> **签名限制：** IPA 未签名，需要自行签名侧载，不能直接安装普通 iPhone。APK 已用 Debug 密钥签名，可安装到 Android 8.0+，包名为 `com.vibe.v2ex.debug`，不是正式发行版。不同 Actions 运行的临时 Debug 密钥可能不同，覆盖升级可能失败；卸载后重装会清除该应用数据，请先备份。它不能替代原作者签名的正式版本。正式分发或稳定覆盖升级需要另行配置并保存自己的签名密钥；不要将密钥或密码提交到仓库。
+> **签名与安装：** IPA 未签名，需要自行签名侧载，不能直接安装普通 iPhone。APK 为 Release 变体，可安装到 Android 8.0+，包名为 `com.vibe.v2ex`；与旧 Debug 版的 `com.vibe.v2ex.debug` 可并存，但不会自动继承其登录和本地数据。当前 Actions 未配置专用发布密钥，沿用工程的 Debug 签名回退，**Release 变体不等于正式发布签名**。不同运行的临时密钥可能不同，后续覆盖升级可能失败；卸载会清除应用数据，请先备份。它不能覆盖原作者签名的同包名版本。正式分发或稳定覆盖升级需要另行配置并保存自己的签名密钥；不要将密钥或密码提交到仓库。
 
 **首次启用：** 新增的 `android-build.yml` 需要先合入默认分支 `main`，才会出现在 Actions 的手动运行列表中。若仍在整合分支，先合并对应 PR；不要把“尚未登记工作流”误认为构建失败。
 
@@ -121,11 +143,11 @@ python3 tests/check-reply-submission.py
 在仓库根目录执行：
 
 ```bash
-./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:assembleDebug
-./android/gradlew -p android --no-daemon :app:lintDebug
+./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:assembleRelease
+./android/gradlew -p android --no-daemon :app:lintRelease
 ```
 
-APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。也可用 Android Studio 直接打开 `android/`。Android 的源码来源和签名细节见 [`android/UPSTREAM.md`](android/UPSTREAM.md)。
+APK 位于 `android/app/build/outputs/apk/release/app-release.apk`。也可用 Android Studio 直接打开 `android/`。Android 的源码来源和签名细节见 [`android/UPSTREAM.md`](android/UPSTREAM.md)。
 
 ## 项目结构
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run production website pagination/parser against fixtures or supplied public captures."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,7 @@ actor Client {
     static let desktopUserAgent = "fixture"
     let html: String
     init(_ html: String) { self.html = html }
-    func webHTML(path: String, userAgent: String) async throws -> String { html }
+    func webHTML(path: String, userAgent: String, fresh: Bool = false) async throws -> String { html }
 ''' + page + parser + match + field + '\n}\n' + r'''
 @main struct Checks {
     static func main() async throws {
@@ -41,9 +42,11 @@ actor Client {
     }
 }
 '''
-with tempfile.TemporaryDirectory() as tmp:
+job_dir = os.environ.get('CLAUDE_JOB_DIR')
+scratch = str(Path(job_dir) / 'tmp') if job_dir else None
+with tempfile.TemporaryDirectory(prefix='v2ex-topic-pages-', dir=scratch) as tmp:
     source = Path(tmp) / 'checks.swift'
     source.write_text(code)
     binary = Path(tmp) / 'checks'
-    subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', '/tmp/v2ex-test-module-cache', str(source), '-o', str(binary)], check=True)
+    subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(Path(tmp) / 'module-cache'), str(source), '-o', str(binary)], check=True)
     subprocess.run([str(binary), *sys.argv[1:]], check=True)

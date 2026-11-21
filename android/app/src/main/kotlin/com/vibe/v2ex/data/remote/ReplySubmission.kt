@@ -55,9 +55,9 @@ internal class ReplySubmission(
         .readTimeout(5, TimeUnit.SECONDS)
         .build()
 
-    private data class HttpPage(val code: Int, val url: HttpUrl, val location: String?, val html: String)
+    private data class HttpPage(val code: Int, val url: HttpUrl, val location: String?, val html: String, val mitigated: Boolean)
 
-    suspend fun postReply(topicId: Long, content: String, cookie: String?, username: String?): Result<Unit> =
+    suspend fun postReply(topicId: Long, content: String, cookie: String?, username: String?, userAgent: String? = null): Result<Unit> =
         withContext(Dispatchers.IO) {
             var submitted = false
             try {
@@ -69,12 +69,16 @@ internal class ReplySubmission(
                 } ?: reject("网页会话已失效，请重新登录 V2EX")
                 val author = username?.trim()?.takeIf { USERNAME.matches(it) }
                     ?: reject("无法确认网页账号，请重新登录 V2EX 后再回复")
+                // Preserve this login's browser identity throughout the operation, including confirmation GETs.
+                val sessionUserAgent = (userAgent ?: LEGACY_USER_AGENT).takeIf { value ->
+                    value.isNotBlank() && value.all { it.code in 32..126 }
+                } ?: reject("网页登录浏览器信息无效，请重新登录 V2EX 后再回复")
                 val topicUrl = baseUrl.newBuilder().encodedPath("/t/$topicId").query(null).fragment(null).build()
-                val before = readLatest(topicUrl, topicUrl, sessionCookie, client)
+                val before = readLatest(topicUrl, topicUrl, sessionCookie, sessionUserAgent, client)
                 val form = before.last().form() ?: reject("当前话题没有可用的回复表单，请到网页检查登录状态或回复权限")
                 val baseline = before.maxOf { it.maximumReplyId }
                 val body = FormBody.Builder().add("content", text).add("once", form.once).build()
-                val request = request(form.url, topicUrl, sessionCookie).post(OneShotBody(body)).build()
+                val request = request(form.url, topicUrl, sessionCookie, sessionUserAgent).post(OneShotBody(body)).build()
 
                 currentCoroutineContext().ensureActive()
                 submitted = true
@@ -103,7 +107,7 @@ internal class ReplySubmission(
                     if (attempt > 0) waitBeforeRetry(attempt * 1000L)
                     currentCoroutineContext().ensureActive()
                     try {
-                        val pages = readLatest(confirmationUrl, topicUrl, sessionCookie, confirmationClient)
+                        val pages = readLatest(confirmationUrl, topicUrl, sessionCookie, sessionUserAgent, confirmationClient)
                         if (pages.any { it.confirms(text, author, baseline) }) return@withContext Result.success(Unit)
                     } catch (_: IOException) {
                         // Only read-only failures are retried; explicit rejections and cancellation escape.
@@ -127,12 +131,13 @@ internal class ReplySubmission(
         startUrl: HttpUrl,
         topicUrl: HttpUrl,
         cookie: String,
+        userAgent: String,
         httpClient: OkHttpClient,
     ): List<ReplyPage> {
         val pages = mutableListOf<ReplyPage>()
         var url = startUrl
         repeat(3) {
-            val response = get(url, topicUrl, cookie, httpClient)
+            val response = get(url, topicUrl, cookie, userAgent, httpClient)
             val page = validate(response, topicUrl)
             if (response.code !in 200..299) throw IOException("Reply page unavailable")
             pages.add(page)
@@ -144,11 +149,11 @@ internal class ReplySubmission(
         throw IOException("Reply pagination did not settle")
     }
 
-    private suspend fun get(url: HttpUrl, topicUrl: HttpUrl, cookie: String, httpClient: OkHttpClient): HttpPage {
+    private suspend fun get(url: HttpUrl, topicUrl: HttpUrl, cookie: String, userAgent: String, httpClient: OkHttpClient): HttpPage {
         var next = url
         repeat(6) {
             if (!next.isReplyTopic(topicUrl)) reject("回复页面地址异常，请到网页检查；草稿已保留")
-            val response = execute(request(next, topicUrl, cookie).get().build(), httpClient)
+            val response = execute(request(next, topicUrl, cookie, userAgent).get().build(), httpClient)
             if (response.code !in REDIRECT_CODES) return response
             next = redirectTarget(response, topicUrl)
         }
@@ -168,7 +173,7 @@ internal class ReplySubmission(
     private fun validate(response: HttpPage, topicUrl: HttpUrl): ReplyPage {
         if (!response.url.isReplyTopic(topicUrl)) reject("回复页面地址异常；草稿已保留")
         val page = ReplyPage(response.html, response.url, topicUrl)
-        page.rejection()?.let(::reject)
+        page.rejection(response.mitigated)?.let(::reject)
         when (response.code) {
             401 -> reject("网页会话已失效，请重新登录 V2EX；请先在网页确认回复结果")
             403 -> reject("V2EX 拒绝了本次请求，请先到网页检查回复结果或验证要求；草稿已保留")
@@ -178,12 +183,12 @@ internal class ReplySubmission(
         return page
     }
 
-    private fun request(url: HttpUrl, topicUrl: HttpUrl, cookie: String): Request.Builder = Request.Builder()
+    private fun request(url: HttpUrl, topicUrl: HttpUrl, cookie: String, userAgent: String): Request.Builder = Request.Builder()
         .url(url)
         .header("Cookie", cookie)
         .header("Origin", topicUrl.newBuilder().encodedPath("/").query(null).fragment(null).build().toString().trimEnd('/'))
         .header("Referer", topicUrl.toString())
-        .header("User-Agent", USER_AGENT)
+        .header("User-Agent", userAgent)
         .header("Accept", "text/html,application/xhtml+xml")
         .header("Cache-Control", "no-cache, no-store")
         .header("Pragma", "no-cache")
@@ -200,7 +205,7 @@ internal class ReplySubmission(
                 override fun onResponse(call: Call, response: Response): Unit {
                     val result = try {
                         response.use {
-                            Result.success(HttpPage(it.code, it.request.url, it.header("Location"), it.body.string()))
+                            Result.success(HttpPage(it.code, it.request.url, it.header("Location"), it.body.string(), it.header("cf-mitigated").equals("challenge", true)))
                         }
                     } catch (error: Exception) {
                         Result.failure(error)
@@ -223,7 +228,7 @@ internal class ReplySubmission(
     private companion object {
         val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
         val USERNAME = Regex("[A-Za-z0-9_]+")
-        const val USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) " +
+        const val LEGACY_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) " +
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1"
     }
 }

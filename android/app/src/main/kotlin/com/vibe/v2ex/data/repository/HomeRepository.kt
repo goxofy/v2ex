@@ -1,5 +1,8 @@
 package com.vibe.v2ex.data.repository
 
+import com.vibe.v2ex.data.datastore.SecureStore
+import com.vibe.v2ex.data.remote.FollowingService
+import kotlinx.coroutines.flow.StateFlow
 import com.vibe.v2ex.data.model.Topic
 import com.vibe.v2ex.data.remote.PublicTopicPage
 import com.vibe.v2ex.data.remote.V2exApiV1
@@ -7,12 +10,39 @@ import com.vibe.v2ex.data.remote.WebSessionService
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** Rejects private feed responses obtained under a previous web session. */
+internal class FollowingSession(
+    private val revision: StateFlow<Long>,
+    private val cookie: () -> String?,
+    private val fetch: suspend (Int, String) -> PublicTopicPage,
+) {
+    suspend fun topics(page: Int): PublicTopicPage {
+        val started = revision.value
+        val credential = cookie()?.takeIf { it.isNotBlank() }
+            ?: error("请先在 App 内网页登录 V2EX，再查看关注")
+        val result = fetch(page, credential)
+        check(started == revision.value && credential == cookie()) { "登录账号已变化，请重新加载关注" }
+        return result
+    }
+}
+
 @Singleton
 class HomeRepository @Inject constructor(
     private val apiV1: V2exApiV1,
     private val webSessionService: WebSessionService,
+    followingService: FollowingService,
+    credentials: SecureStore,
 ) {
-    /** Public website feed used by recent, node, and followed-node pagination. */
+    val sessionRevision: StateFlow<Long> = credentials.accountCredentialsRevision
+    private val followingSession = FollowingSession(
+        revision = sessionRevision,
+        cookie = { if (credentials.isWebSessionActive) credentials.sessionCookieHeader else null },
+        fetch = followingService::topics,
+    )
+
+    suspend fun followingTopics(page: Int): PublicTopicPage = followingSession.topics(page)
+
+    /** Public website feed used by recent and node pagination. */
     suspend fun publicTopicPage(nodeName: String?, page: Int): Result<PublicTopicPage> =
         webSessionService.publicTopicPage(nodeName = nodeName, page = page)
 

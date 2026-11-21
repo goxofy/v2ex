@@ -75,6 +75,7 @@ struct SearchView: View {
 
     @StateObject private var model = SearchViewModel()
     @EnvironmentObject private var recents: RecentSearchStore
+    @EnvironmentObject private var moves: TopicMoveStore
     @EnvironmentObject private var moderation: ModerationStore
     @State private var reportTarget: ModerationTarget?
     @FocusState private var searchFocused: Bool
@@ -210,7 +211,7 @@ struct SearchView: View {
             HighlightedText(segments: hit.contentSegments, size: 14, weight: .regular, muted: true)
                 .lineLimit(2)
             HStack(spacing: 6) {
-                Text(NodeCatalog.displayName(for: hit.node))
+                Text(moves.movedNodes[hit.id]?.title ?? NodeCatalog.displayName(for: hit.node))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.accent)
                 Text("·").font(.system(size: 12)).foregroundStyle(Theme.faint)

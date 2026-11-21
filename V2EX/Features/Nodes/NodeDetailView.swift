@@ -112,7 +112,11 @@ struct NodeDetailView: View {
     @EnvironmentObject private var moderation: ModerationStore
     @Environment(\.openURL) private var openURL
 
-    private var visibleTopics: [V2Topic] { moderation.filter(model.sorted) }
+    @EnvironmentObject private var moves: TopicMoveStore
+
+    private var visibleTopics: [V2Topic] {
+        moderation.filter(model.sorted).filter { moves.movedNodes[$0.id].map { $0.name == nodeName } ?? true }
+    }
 
     var body: some View {
         ScrollView {

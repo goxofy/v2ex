@@ -154,13 +154,14 @@ extension View {
 
 /// Lead card at the top of a feed. Title-led, one quiet meta line.
 struct FeaturedTopicCard: View {
+    @EnvironmentObject private var moves: TopicMoveStore
     let topic: V2Topic
     var badge: String = "今日最热"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                NodeTag(title: topic.nodeTitle, size: 12)
+                NodeTag(title: moves.movedNodes[topic.id]?.title ?? topic.nodeTitle, size: 12)
                 Text(badge)
                     .font(Type.label(11))
                     .foregroundStyle(Theme.accent)
@@ -216,6 +217,7 @@ struct FeaturedTopicCard: View {
 /// the strongest position on screen; here the headline leads and identity is
 /// demoted to the meta line.
 struct TopicRow: View {
+    @EnvironmentObject private var moves: TopicMoveStore
     let topic: V2Topic
     var showsNode = true
     var isOffline = false
@@ -236,7 +238,7 @@ struct TopicRow: View {
 
                 HStack(spacing: 7) {
                     if showsNode, !topic.nodeTitle.isEmpty {
-                        NodeTag(title: topic.nodeTitle, size: 12)
+                        NodeTag(title: moves.movedNodes[topic.id]?.title ?? topic.nodeTitle, size: 12)
                     }
                     if !topic.authorName.isEmpty {
                         IdentitySquare(text: topic.authorName, size: 16, imageURL: topic.member?.avatarURL)

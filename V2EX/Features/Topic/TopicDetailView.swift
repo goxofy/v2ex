@@ -11,11 +11,17 @@ struct TopicDetailView: View {
     @EnvironmentObject private var readState: ReadStateStore
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var session: V2EXSessionStore
+    @EnvironmentObject private var moves: TopicMoveStore
+    @State private var showMove = false
+    @State private var moveMessage: String?
+    @State private var moveReceipt = 0
+    @State private var movePermissionIdentity: String?
     @EnvironmentObject private var replyDrafts: ReplyDraftStore
     @EnvironmentObject private var history: HistoryStore
     @EnvironmentObject private var moderation: ModerationStore
     @Environment(\.openURL) private var openURL
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var replyError: String?
@@ -63,6 +69,7 @@ struct TopicDetailView: View {
         // The floating reply composer owns the bottom of this screen.
         .toolbar(.hidden, for: .tabBar)
         .toolbar { toolbarContent }
+        .onChange(of: moves.movedNodes[topicID], initial: true) { _, node in model.updateMovedNode(node) }
         .task {
             readState.markRead(topicID)
             await model.load(
@@ -75,6 +82,39 @@ struct TopicDetailView: View {
             // 载入之后才记，历史列表要靠这份话题体自己把行画出来。
             if let topic = model.topic { history.record(topic) }
         }
+        .task(id: "\(moves.key(session: session))|\(scenePhase)") {
+            guard scenePhase == .active else { return }
+            let identity = moves.key(session: session)
+            movePermissionIdentity = nil
+            await moves.watch(topicID, session: session)
+            guard !Task.isCancelled, identity == moves.key(session: session) else { return }
+            if moves.allowed(topicID, session: session) { movePermissionIdentity = identity }
+        }
+        .sheet(isPresented: $showMove) {
+            if let topic = model.topic {
+                TopicMoveSheet(topic: topic) { result in
+                    moveMessage = result.message
+                    moveReceipt += 1
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if let moveMessage {
+                Text(moveMessage).font(.subheadline).padding()
+                    .background(.regularMaterial, in: Capsule()).padding(.top, 12)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
+        .task(id: moveReceipt) {
+            guard moveReceipt > 0 else { return }
+            await moves.refreshMovedNode(topicID, session: session)
+        }
+        .task(id: moveMessage) {
+            guard moveMessage != nil else { return }
+            do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
+            moveMessage = nil
+        }
+        .onChange(of: moves.key(session: session)) { _, _ in showMove = false; moveMessage = nil }
         .sheet(isPresented: $showShareCard) {
             if let topic = model.topic {
                 TopicShareCardSheet(
@@ -366,7 +406,7 @@ struct TopicDetailView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            if let node = model.topic?.node {
+            if let node = moves.movedNodes[topicID].map({ V2Node.stub(name: $0.name, title: $0.title) }) ?? model.topic?.node {
                 NavigationLink(value: Route.node(node.name)) {
                     Text(node.title)
                         .font(.system(size: 15, weight: .semibold))
@@ -409,6 +449,9 @@ struct TopicDetailView: View {
                 }
                 .disabled(isSyncingFavorite)
                 Menu {
+                    if session.isLoggedIn, movePermissionIdentity == moves.key(session: session), model.topic != nil {
+                        Button { showMove = true } label: { Label("移动主题", systemImage: "arrow.right.square") }
+                    }
                     Button {
                         toggleOffline()
                     } label: {

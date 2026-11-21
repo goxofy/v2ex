@@ -187,12 +187,21 @@ private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
     }
 }
 
+enum FeedRequestTrace {
+    @TaskLocal static var id: UUID?
+    private static let logger = Logger(subsystem: "com.vibe.v2ex", category: "feed-refresh")
+
+    static func record(_ event: String, request: UUID) -> Void {
+        // Events contain only fixed phases, counts and local request IDs, never account data.
+        logger.info("request=\(request.uuidString, privacy: .public) \(event, privacy: .public)")
+    }
+}
+
 /// Talks to three surfaces:
 /// * V2EX API 1.0 — public, no auth, powers everything read-only.
 /// * V2EX API 2.0 — needs a Personal Access Token; notifications, own profile,
 ///   paginated node topics.
 /// * sov2ex — the community full-text index, since V2EX exposes no search API.
-
 actor V2EXClient {
     static let shared = V2EXClient()
 
@@ -262,7 +271,7 @@ actor V2EXClient {
             throw V2EXError.decoding("节点名称无效")
         }
         let path = node.map { "/go/\($0)" } ?? "/recent"
-        let html = try await webHTML(path: "\(path)?p=\(page)", userAgent: Self.desktopUserAgent)
+        let html = try await webHTML(path: "\(path)?p=\(page)", userAgent: Self.desktopUserAgent, fresh: true)
         let topics = Self.topicRows(from: html).map { topic in
             var topic = topic
             if topic.node == nil, let node { topic.node = V2Node.stub(name: node) }
@@ -300,7 +309,7 @@ actor V2EXClient {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15"
 
     private func hotTopicsFromWeb() async throws -> [V2Topic] {
-        let html = try await webHTML(path: "/?tab=hot", userAgent: Self.desktopUserAgent)
+        let html = try await webHTML(path: "/?tab=hot", userAgent: Self.desktopUserAgent, fresh: true)
         let rows = Self.topicRows(from: html)
         Self.log("hotTopicsFromWeb: rows=\(rows.count) len=\(html.count)")
         return rows
@@ -1440,7 +1449,7 @@ extension V2EXClient {
     /// API 1.0 的 latest/hot 接口会忽略 `tab=r2`，API 2.0 也没有 tabs
     /// 接口，因此和最热一样抓公开网页；主题详情仍走现有 API。
     func r2Topics() async throws -> [V2Topic] {
-        let html = try await webHTML(path: "/?tab=r2", userAgent: Self.desktopUserAgent)
+        let html = try await webHTML(path: "/?tab=r2", userAgent: Self.desktopUserAgent, fresh: true)
         let topics = Self.topicRows(from: html)
         // R2 没有 API 可兜底，解析被改版打残时明确报错好过静默空屏。
         guard !topics.isEmpty else {
@@ -1685,12 +1694,35 @@ extension V2EXClient {
     private func webHTML(
         path: String,
         cookie: String? = nil,
-        userAgent: String = V2EXClient.mobileUserAgent
+        userAgent: String = V2EXClient.mobileUserAgent,
+        fresh: Bool = false
     ) async throws -> String {
-        var request = URLRequest(url: V2EXEndpoint.url(path))
+        var url = V2EXEndpoint.url(path)
+        if fresh {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                throw V2EXError.decoding("话题列表地址无效")
+            }
+            var items = components.queryItems ?? []
+            items.removeAll { $0.name == "_" }
+            items.append(URLQueryItem(name: "_", value: UUID().uuidString))
+            components.queryItems = items
+            guard let freshURL = components.url else { throw V2EXError.decoding("话题列表地址无效") }
+            url = freshURL
+        }
+        var request = URLRequest(url: url)
+        if fresh {
+            // Bypass the ephemeral session's memory cache as well as intermediary cache keys.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
+            request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        }
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+        if let trace = FeedRequestTrace.id { FeedRequestTrace.record("http-start", request: trace) }
         let (data, response) = try await webSession.data(for: request)
+        if let trace = FeedRequestTrace.id {
+            FeedRequestTrace.record("http-response status=\((response as? HTTPURLResponse)?.statusCode ?? 0)", request: trace)
+        }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let html = String(data: data, encoding: .utf8) else {
             throw V2EXError.decoding("网页加载失败：\(path)")

@@ -1,153 +1,16 @@
 import SwiftUI
 
-@MainActor
-final class HomeViewModel: ObservableObject {
-    enum Feed: Hashable {
-        case all
-        case following
-        case hot
-        case r2
-        case node(name: String, title: String)
-        /// 唯一的非 V2EX 数据源：自成一页，不与本站内容混排。
-        case hackerNews
-
-        var title: String {
-            switch self {
-            case .all: return "全部"
-            case .following: return "关注"
-            case .hot: return "最热"
-            case .r2: return "R2"
-            case .node(_, let title): return title
-            case .hackerNews: return "HN"
-            }
-        }
-    }
-
-    @Published var feed: Feed = .all
-    @Published private(set) var topics: [V2Topic] = []
-    @Published private(set) var isLoading = false
-    @Published private(set) var errorMessage: String?
-    @Published private(set) var moreError: String?
-    @Published private(set) var hasMore = false
-    @Published private(set) var paginationID = UUID()
-
-    private struct Snapshot {
-        var topics: [V2Topic]
-        var page: Int
-        var sources: [String]
-        var hasMore: Bool
-    }
-    private var cache: [Feed: Snapshot] = [:]
-    private var generation = UUID()
-    private var followedNames: [String] = []
-
-    func load(feed: Feed, followedNodes: [String], force: Bool = false) async {
-        self.feed = feed
-        let request = UUID()
-        generation = request
-        if followedNames != followedNodes { cache[.following] = nil }
-        followedNames = followedNodes
-        moreError = nil
-        errorMessage = nil
-        if !force, let cached = cache[feed] {
-            topics = cached.topics
-            hasMore = cached.hasMore
-            isLoading = false
-            return
-        }
-        if !force { topics = [] }
-        isLoading = true
-        defer { if generation == request { isLoading = false } }
-        do {
-            let snapshot = try await fetch(feed: feed, page: 1, sources: followedNodes)
-            guard generation == request, self.feed == feed else { return }
-            cache[feed] = snapshot
-            topics = snapshot.topics
-            hasMore = snapshot.hasMore
-            paginationID = UUID()
-        } catch {
-            guard generation == request, self.feed == feed else { return }
-            errorMessage = error.localizedDescription
-            topics = cache[feed]?.topics ?? []
-            hasMore = cache[feed]?.hasMore ?? false
-        }
-    }
-
-    func loadMore(feed: Feed) async {
-        guard self.feed == feed, !isLoading, hasMore, let previous = cache[feed] else { return }
-        let request = generation
-        isLoading = true
-        moreError = nil
-        defer { if generation == request { isLoading = false } }
-        do {
-            var next = try await fetch(feed: feed, page: previous.page + 1, sources: previous.sources)
-            guard generation == request, self.feed == feed else { return }
-            var seen = Set(previous.topics.map(\.id))
-            next.topics = previous.topics + next.topics.filter { seen.insert($0.id).inserted }
-            cache[feed] = next
-            topics = next.topics
-            hasMore = next.hasMore
-            paginationID = UUID()
-        } catch {
-            // The footer re-runs its task when it scrolls back into view.
-            guard generation == request, self.feed == feed, !error.isCancellation else { return }
-            moreError = error.localizedDescription
-        }
-    }
-
-    private func fetch(feed: Feed, page: Int, sources: [String]) async throws -> Snapshot {
-        switch feed {
-        case .hot:
-            return Snapshot(topics: try await V2EXClient.shared.hotTopics(), page: 1, sources: [], hasMore: false)
-        case .r2:
-            return Snapshot(topics: try await V2EXClient.shared.r2Topics(), page: 1, sources: [], hasMore: false)
-        case .hackerNews:
-            return Snapshot(topics: [], page: 1, sources: [], hasMore: false)
-        case .all, .node, .following:
-            let nodes: [String]
-            switch feed {
-            case .node(let name, _): nodes = [name]
-            case .following: nodes = sources
-            default: nodes = []
-            }
-            if nodes.isEmpty {
-                let result = try await V2EXClient.shared.publicTopicPage(page: page)
-                return Snapshot(topics: result.topics, page: page, sources: [], hasMore: result.hasMore)
-            }
-            var merged: [V2Topic] = []
-            var remaining: [String] = []
-            // A failed source fails the page, preserving the cursor for a complete retry.
-            for node in nodes {
-                let result = try await V2EXClient.shared.publicTopicPage(node: node, page: page)
-                merged += result.topics
-                if result.hasMore { remaining.append(node) }
-            }
-            var seen = Set<Int>()
-            merged = merged.filter { seen.insert($0.id).inserted }
-            if feed == .following { merged.sort { ($0.lastTouched ?? 0) > ($1.lastTouched ?? 0) } }
-            return Snapshot(topics: merged, page: page, sources: remaining, hasMore: !remaining.isEmpty)
-        }
-    }
-
-    /// 明显的推广/广告信号词。命中则从首页 feed 隐藏——V2EX 的最新流里
-    /// 偶尔会混入“免费送/邀请码/住宅 IP”这类推广帖，它们不该占首页版面。
-    private static let promotionSignals = [
-        "邀请码", "免费送", "动态住宅", "住宅 ip", "住宅ip", "流量用不完", "注册送", "返利",
-    ]
-
-    static func isPromotion(_ topic: V2Topic) -> Bool {
-        let haystack = "\(topic.title) \(topic.authorName)".lowercased()
-        return promotionSignals.contains { haystack.contains($0) }
-    }
-
-
-}
-
 struct HomeView: View {
     let request: HomeOpenRequest
     var onCompose: () -> Void
 
     @StateObject private var model = HomeViewModel()
+    @StateObject private var tabs = HomeTabsStore()
+    @EnvironmentObject private var session: V2EXSessionStore
+    @State private var editingTabs = false
+    @State private var refreshFeedback: HomeRefreshFeedback?
+    @State private var isHomeVisible = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var followed: FollowedNodesStore
     @EnvironmentObject private var moderation: ModerationStore
     @EnvironmentObject private var readState: ReadStateStore
@@ -156,20 +19,16 @@ struct HomeView: View {
 
     /// Per-feed scroll offsets, so swiping between categories doesn't lose your place.
     @State private var scrollPositions: [HomeViewModel.Feed: ScrollPosition] = [:]
-    /// 正在被长按拖起的分类 chip（用于关注节点排序）。
-    @State private var draggedFeed: HomeViewModel.Feed?
+    @State private var collapsedNodes: [HomeViewModel.Feed: Bool] = [:]
+    private var nodesCollapsed: Bool { collapsedNodes[model.feed] ?? false }
     /// `.task` 会在从话题详情返回时重新启动。记录已经消费过的打开请求，
     /// 避免把用户当前分类重复重置为请求最初携带的「全部」。
     @State private var handledRequestID: UUID?
 
-    private var feeds: [HomeViewModel.Feed] {
-        [.all, .hot, .r2, .following] + followed.names.prefix(8).map {
-            .node(name: $0, title: NodeCatalog.displayName(for: $0))
-        } + (settings.hackerNewsEnabled ? [.hackerNews] : [])
-    }
+    private var feeds: [HomeViewModel.Feed] { tabs.visible(hackerNews: settings.hackerNewsEnabled) }
 
     private var visibleTopics: [V2Topic] {
-        moderation.filter(model.topics).filter { !HomeViewModel.isPromotion($0) }
+        moderation.filter(model.topics).filter { model.feed == .following || !HomeViewModel.isPromotion($0) }
     }
 
     var body: some View {
@@ -178,6 +37,20 @@ struct HomeView: View {
         TabView(selection: $model.feed) {
             ForEach(feeds, id: \.self) { feed in
                 feedPage(feed)
+                    .onScrollGeometryChange(for: HomeNodeScrollSample.self) { geometry in
+                        HomeNodeScrollSample(
+                            offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                            topInset: geometry.contentInsets.top,
+                            viewportHeight: geometry.containerSize.height
+                        )
+                    } action: { previous, current in
+                        guard model.feed == feed else { return }
+                        let collapsed = current.collapsed(after: previous, wasCollapsed: nodesCollapsed)
+                        guard collapsed != nodesCollapsed else { return }
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+                            collapsedNodes[feed] = collapsed
+                        }
+                    }
                     .tag(feed)
             }
         }
@@ -188,7 +61,18 @@ struct HomeView: View {
         .navigationTitle("V2EX")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        .overlay(alignment: .top) { refreshToast }
         .topSafeAreaBar(spacing: 0) { feedFilterBar }
+        .sheet(isPresented: $editingTabs) {
+            HomeTabsEditor(store: tabs, followedNodes: followed.names, hackerNews: settings.hackerNewsEnabled)
+        }
+        .onChange(of: feeds) { _, current in
+            model.feed = current.first(where: { $0.id == model.feed.id }) ?? current[0]
+        }
+        .task(id: "\(session.revision)|\(V2EXEndpoint.base)") {
+            model.synchronize(session: session)
+            if model.feed == .following { await model.load(feed: .following, session: session) }
+        }
         .task(id: request.id) {
             // NavigationStack cancels this task while a topic is on top and
             // starts it again after Back. The same request must be consumed
@@ -198,22 +82,41 @@ struct HomeView: View {
                 // A cancelled first load may leave a genuinely empty page.
                 // Refresh that same page without changing the selection.
                 if model.feed != .hackerNews, model.topics.isEmpty, !model.isLoading {
-                    await model.load(feed: model.feed, followedNodes: followed.names)
+                    await model.load(feed: model.feed, session: session)
                 }
                 return
             }
             handledRequestID = request.id
 
-            if model.feed == request.feed {
-                await model.load(feed: request.feed, followedNodes: followed.names)
+            let requested = feeds.first(where: { $0.id == request.feed.id }) ?? feeds[0]
+            if model.feed == requested {
+                await model.load(feed: requested, session: session)
             } else {
                 // `onChange` owns the load after switching feeds, avoiding a
                 // duplicate request when Siri opens 今日最热.
-                model.feed = request.feed
+                model.feed = requested
             }
         }
         .onChange(of: model.feed) { _, newFeed in
-            Task { await model.load(feed: newFeed, followedNodes: followed.names) }
+            refreshFeedback = nil
+            Task { await model.load(feed: newFeed, session: session) }
+        }
+        .onChange(of: model.refreshStates) { previous, current in
+            let feed = model.feed
+            guard isHomeVisible, let state = current[feed] else {
+                refreshFeedback = nil
+                return
+            }
+            if state.phase == .refreshing {
+                refreshFeedback = nil
+            } else if let feedback = HomeRefreshFeedback(feed: feed, previous: previous[feed], current: state) {
+                refreshFeedback = feedback
+            }
+        }
+        .onAppear { isHomeVisible = true }
+        .onDisappear {
+            isHomeVisible = false
+            refreshFeedback = nil
         }
     }
 
@@ -228,50 +131,16 @@ struct HomeView: View {
     }
 
     private var feedFilterBar: some View {
-        ChipRail(items: feeds, selected: model.feed) { feed in
-            FilterChip(title: feed.title, isSelected: model.feed == feed) {
-                model.feed = feed
-            }
-            .id(feed)
-            // 长按关注节点 chip 可拖动排序（固定项「全部/最热/关注」
-            // 不可拖，但可以作为落点参照）。顺序写回 followed.names 并持久化。
-            // preview 自定义为胶囊：glassEffect 视图的拖拽快照会丢圆角变方形。
-            .onDrag {
-                guard feed.isReorderable else { return NSItemProvider() }
-                draggedFeed = feed
-                return NSItemProvider(object: feed.title as NSString)
-            } preview: {
-                Text(feed.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(Capsule().fill(Theme.accent))
-            }
-            .onDrop(of: [.text], delegate: FeedChipDropDelegate(
-                target: feed,
-                dragged: draggedFeed,
-                onMove: moveFeed
-            ))
-        }
-        .readableColumn()
-    }
-
-    /// 把被拖起的节点 chip 插到目标 chip 的位置。只处理节点对节点；
-    /// 拖到固定项上由 delegate 直接忽略。
-    private func moveFeed(to target: HomeViewModel.Feed) {
-        guard let dragged = draggedFeed, dragged != target else { return }
-        guard case .node(let draggedName, _) = dragged,
-              case .node(let targetName, _) = target else { return }
-        guard let from = followed.names.firstIndex(of: draggedName),
-              let to = followed.names.firstIndex(of: targetName), from != to else { return }
-        withAnimation(.snappy(duration: 0.25)) {
-            followed.move(from: IndexSet(integer: from), to: to)
+        HomeNodeBar(feeds: feeds, selected: $model.feed, collapsed: nodesCollapsed) {
+            editingTabs = true
         }
     }
 
     @ViewBuilder
     private func feedPage(_ feed: HomeViewModel.Feed) -> some View {
+        let refreshError = model.feed == feed
+            ? HomeRefreshFeedback.retryMessage(error: model.errorMessage, phase: model.refreshState(for: feed).phase)
+            : nil
         if feed == .hackerNews {
             // 数据模型和 V2EX 完全不同（无节点、无附言、评论是嵌套树），
             // 所以自成一页而不是塞进上面的话题列表。
@@ -279,15 +148,21 @@ struct HomeView: View {
         } else {
         ScrollView {
             LazyVStack(spacing: 10) {
-                if let message = model.errorMessage, visibleTopics.isEmpty {
+                if let message = refreshError, !visibleTopics.isEmpty {
+                    EmptyStateCard(icon: "wifi.exclamationmark", title: "刷新失败，当前显示上次内容", message: message,
+                                   actionTitle: "重试") {
+                        Task { await model.refresh(feed: feed, session: session, source: .retry) }
+                    }
+                }
+                if let message = refreshError, visibleTopics.isEmpty {
                     EmptyStateCard(icon: "wifi.exclamationmark", title: "没能加载", message: message,
                                    actionTitle: "重试") {
-                        Task { await model.load(feed: feed, followedNodes: followed.names, force: true) }
+                        Task { await model.refresh(feed: feed, session: session, source: .retry) }
                     }
                 } else if model.isLoading && visibleTopics.isEmpty {
                     LoadingCard()
                 } else if visibleTopics.isEmpty {
-                    EmptyStateCard(icon: "tray", title: "这里还没有话题")
+                    EmptyStateCard(icon: "tray", title: feed == .following ? "关注的人还没有发布话题" : "这里还没有话题")
                 } else {
                     // The public feed opens with a compact live map of where
                     // the current conversation is concentrated. It makes the
@@ -353,10 +228,43 @@ struct HomeView: View {
             .padding(.bottom, 100)
         }
         .scrollIndicators(.hidden)
-        .pullToRefresh(isEnabled: model.feed == feed) {
-            await model.load(feed: feed, followedNodes: followed.names, force: true)
+        .pullToRefresh {
+            await model.refresh(feed: feed, session: session, source: .pull)
         }
         .scrollPosition(scrollBinding(for: feed))
+        }
+    }
+
+    @ViewBuilder
+    private var refreshToast: some View {
+        if let feedback = refreshFeedback, feedback.feed == model.feed {
+            HStack(spacing: 8) {
+                Image(systemName: feedback.icon).foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(feedback.title).foregroundStyle(Theme.ink)
+                    if let date = feedback.lastSuccess {
+                        Text("最近成功获取 \(date.formatted(.dateTime.hour().minute().second()))")
+                            .foregroundStyle(Theme.muted)
+                    }
+                }
+                .font(.footnote)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+            .padding(.horizontal, Theme.Metric.screenPadding)
+            .padding(.top, 8)
+            .accessibilityElement(children: .combine)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+            .task(id: feedback.id) {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                guard refreshFeedback?.id == feedback.id else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                    refreshFeedback = nil
+                }
+            }
         }
     }
 
@@ -366,6 +274,86 @@ struct HomeView: View {
             set: { scrollPositions[feed] = $0 }
         )
     }
+}
+
+private struct HomeNodeBar: View {
+    let feeds: [HomeFeed]
+    @Binding var selected: HomeFeed
+    let collapsed: Bool
+    let onEdit: () -> Void
+    @State private var viewportWidth: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HomeNodeFlowLayout(
+                        viewportWidth: max(0, viewportWidth - Theme.Metric.screenPadding * 2),
+                        maxRows: collapsed ? 1 : 3
+                    ) {
+                        ForEach(feeds, id: \.self) { feed in
+                            FilterChip(title: feed.title, isSelected: selected == feed, minimumHeight: 36) {
+                                selected = feed
+                            }
+                            .fixedSize()
+                            .accessibilityLabel(feed.title)
+                            .id(feed)
+                        }
+                    }
+                    .padding(.horizontal, Theme.Metric.screenPadding)
+                    .padding(.vertical, 2)
+                }
+                // Use intrinsic content height, not a geometry -> @State -> frame feedback loop.
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    viewportWidth = width
+                }
+                .accessibilityHint(collapsed ? "单行节点列表，可左右滑动" : "最多三行节点列表，可左右滑动")
+                .task(id: HomeNodeRailIdentity(feed: selected, feeds: feeds, collapsed: collapsed, width: viewportWidth)) {
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo(selected, anchor: .center)
+                }
+            }
+            Button(action: onEdit) { Image(systemName: "slider.horizontal.3").padding(10) }
+                .accessibilityLabel("编辑首页标签")
+        }
+        .readableColumn()
+    }
+}
+
+private struct HomeNodeRailIdentity: Hashable {
+    let feed: HomeFeed
+    let feeds: [HomeFeed]
+    let collapsed: Bool
+    let width: CGFloat
+}
+
+private struct HomeNodeFlowLayout: Layout {
+    let viewportWidth: CGFloat
+    let maxRows: Int
+
+    func makeCache(subviews: Subviews) -> HomeNodeLayoutCache {
+        HomeNodeLayoutCache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
+    }
+
+    func updateCache(_ cache: inout HomeNodeLayoutCache, subviews: Subviews) -> Void {
+        cache.update(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout HomeNodeLayoutCache) -> CGSize {
+        cache.layout(viewportWidth: viewportWidth, maxRows: maxRows).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout HomeNodeLayoutCache) -> Void {
+        let layout = cache.layout(viewportWidth: viewportWidth, maxRows: maxRows)
+        for (index, subview) in subviews.enumerated() {
+            let frame = layout.frames[index]
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+
 }
 
 // MARK: - Community pulse
@@ -490,31 +478,4 @@ private struct CommunityPulseCard: View {
             }
         }
     }
-}
-
-extension HomeViewModel.Feed {
-    /// 固定项（全部/最热/R2/关注/HN）不可拖，只有关注节点参与排序。
-    var isReorderable: Bool {
-        if case .node = self { return true }
-        return false
-    }
-}
-
-/// 首页分类 chip 的拖动落点：被拖起的节点 chip 进入某个可排序 chip 时，
-/// 把它插到目标 chip 的位置（由 onMove 执行）。固定项作为落点时直接忽略。
-private struct FeedChipDropDelegate: DropDelegate {
-    let target: HomeViewModel.Feed
-    let dragged: HomeViewModel.Feed?
-    let onMove: (HomeViewModel.Feed) -> Void
-
-    func dropEntered(info: DropInfo) {
-        guard let dragged, dragged != target, target.isReorderable else { return }
-        onMove(target)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool { true }
 }

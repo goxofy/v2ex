@@ -16,7 +16,25 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainWidth
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -38,6 +56,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,100 +102,114 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val pagerState = rememberPagerState(
-        initialPage = uiState.currentIndex,
-        pageCount = { uiState.feeds.size },
-    )
-    val railState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
+    var editingTabs by remember { mutableStateOf(false) }
+    if (editingTabs) HomeTabsEditor(uiState.feeds, viewModel) { editingTabs = false }
+    val feedStates = rememberSaveableStateHolder()
+    key(uiState.feeds.map { it.key }) {
+        val pagerState = rememberPagerState(
+            initialPage = uiState.currentIndex,
+            pageCount = { uiState.feeds.size },
+        )
+        var nodesCollapsed by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
 
-    LaunchedEffect(pagerState.currentPage) {
-        viewModel.selectFeed(pagerState.currentPage)
-        val target = pagerState.currentPage.coerceIn(0, (uiState.feeds.lastIndex).coerceAtLeast(0))
-        railState.animateScrollToItem(target)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .statusBarsPadding(),
-    ) {
-        // 大标题 + 玻璃搜索圆钮 + accent 发布圆钮（设计稿 01 顶栏）
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "V2EX",
-                style = MaterialTheme.typography.headlineLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f),
-            )
-            GlassCircleButton(onClick = onSearchClick) {
-                Icon(
-                    Icons.Filled.Search,
-                    contentDescription = "搜索",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(19.dp),
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            GlassCircleButton(onClick = onComposeClick, accent = true) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = "写新话题",
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+        LaunchedEffect(pagerState.currentPage) {
+            viewModel.selectFeed(pagerState.currentPage)
         }
 
-        FeedChipRail(
-            feeds = uiState.feeds,
-            selectedIndex = pagerState.currentPage,
-            railState = railState,
-            onSelect = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .statusBarsPadding(),
+        ) {
+            // 大标题 + 玻璃搜索圆钮 + accent 发布圆钮（设计稿 01 顶栏）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "V2EX",
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f),
+                )
+                GlassCircleButton(onClick = onSearchClick) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = "搜索",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                GlassCircleButton(onClick = onComposeClick, accent = true) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "写新话题",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
 
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize(),
-            key = { page -> uiState.feeds.getOrNull(page)?.key ?: "page-$page" },
-        ) { page ->
-            val feed = uiState.feeds.getOrNull(page) ?: return@HorizontalPager
-            FeedPage(
-                topics = uiState.topicsByFeed[feed.key],
-                isLoading = feed.key in uiState.loadingFeeds,
-                isLoadingMore = feed.key in uiState.loadingMoreFeeds,
-                error = uiState.errorsByFeed[feed.key],
-                loadMoreError = uiState.loadMoreErrorsByFeed[feed.key],
-                hasMore = uiState.hasMoreByFeed[feed.key] == true,
-                paginationToken = uiState.paginationTokensByFeed[feed.key] ?: 0L,
-                isActive = pagerState.currentPage == page,
-                cachedAt = uiState.cachedAtByFeed[feed.key],
-                featuredBadge = when (feed) {
-                    HomeFeed.Hot -> "今日最热"
-                    HomeFeed.R2 -> "R2 排序"
-                    else -> "最新活跃"
-                },
-                readIds = if (uiState.dimReadTopics) uiState.readIds else emptySet(),
-                offlineIds = uiState.offlineIds,
-                showCommunityPulse = feed == HomeFeed.All && uiState.communityPulseEnabled,
-                onRefresh = {
-                    if (pagerState.currentPage == page) viewModel.refresh(feed)
-                },
-                onLoadMore = { viewModel.loadMore(feed) },
-                endMessage = if (feed == HomeFeed.Hot || feed == HomeFeed.R2) {
-                    "已展示全部榜单话题"
-                } else {
-                    "没有更多话题了"
-                },
-                onTopicClick = onTopicClick,
-                onNodeClick = onNodeClick,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    FeedChipRail(
+                        feeds = uiState.feeds,
+                        selectedIndex = pagerState.currentPage,
+                        collapsed = nodesCollapsed,
+                        onSelect = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
+                    )
+                }
+                TextButton(onClick = { editingTabs = true }) { Text("编辑") }
+            }
+
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                key = { page -> uiState.feeds.getOrNull(page)?.key ?: "page-$page" },
+            ) { page ->
+                val feed = uiState.feeds.getOrNull(page) ?: return@HorizontalPager
+                feedStates.SaveableStateProvider(feed.key) {
+                    FeedPage(
+                        topics = uiState.topicsByFeed[feed.key],
+                        isLoading = feed.key in uiState.loadingFeeds,
+                        isLoadingMore = feed.key in uiState.loadingMoreFeeds,
+                        error = uiState.errorsByFeed[feed.key],
+                        loadMoreError = uiState.loadMoreErrorsByFeed[feed.key],
+                        hasMore = uiState.hasMoreByFeed[feed.key] == true,
+                        paginationToken = uiState.paginationTokensByFeed[feed.key] ?: 0L,
+                        isActive = pagerState.currentPage == page,
+                        onNodesCollapsed = { collapsed ->
+                            if (pagerState.currentPage == page) nodesCollapsed = collapsed
+                        },
+                        cachedAt = uiState.cachedAtByFeed[feed.key],
+                        emptyMessage = if (feed == HomeFeed.Following) "关注的人还没有发布话题" else "暂无话题",
+                        featuredBadge = when (feed) {
+                            HomeFeed.Hot -> "今日最热"
+                            HomeFeed.R2 -> "R2 排序"
+                            else -> "最新活跃"
+                        },
+                        readIds = if (uiState.dimReadTopics) uiState.readIds else emptySet(),
+                        offlineIds = uiState.offlineIds,
+                        showCommunityPulse = feed == HomeFeed.All && uiState.communityPulseEnabled,
+                        onRefresh = {
+                            if (pagerState.currentPage == page) viewModel.refresh(feed)
+                        },
+                        onLoadMore = { viewModel.loadMore(feed) },
+                        endMessage = if (feed == HomeFeed.Hot || feed == HomeFeed.R2) {
+                            "已展示全部榜单话题"
+                        } else {
+                            "没有更多话题了"
+                        },
+                        onTopicClick = onTopicClick,
+                        onNodeClick = onNodeClick,
+                    )
+                }
+            }
         }
     }
 }
@@ -181,39 +219,78 @@ fun HomeScreen(
 private fun FeedChipRail(
     feeds: List<HomeFeed>,
     selectedIndex: Int,
-    railState: androidx.compose.foundation.lazy.LazyListState,
+    collapsed: Boolean,
     onSelect: (Int) -> Unit,
-) {
+): Unit {
     val dark = LocalV2Dark.current
-    LazyRow(
-        state = railState,
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
-    ) {
-        itemsIndexed(feeds, key = { _, feed -> feed.key }) { index, feed ->
-            val selected = index == selectedIndex
-            Text(
-                text = feed.title,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                color = when {
-                    selected -> MaterialTheme.colorScheme.onPrimary
-                    dark -> MaterialTheme.colorScheme.onSurfaceVariant
-                    else -> Color(0xFF3C3C43)
-                },
-                modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(
-                        when {
-                            selected -> MaterialTheme.colorScheme.primary
-                            dark -> Color(0xFF1C1C1E).copy(alpha = 0.9f)
-                            else -> Color.White.copy(alpha = 0.85f)
-                        },
-                    )
-                    .clickable { onSelect(index) }
-                    .padding(horizontal = 15.dp, vertical = 7.dp),
+    val scrollState = rememberScrollState()
+    val requesters = remember(feeds) { feeds.map { BringIntoViewRequester() } }
+    val layoutCache = remember { HomeNodeLayoutCache() }
+    BoxWithConstraints(Modifier.fillMaxWidth().animateContentSize(tween(220))) {
+        val density = LocalDensity.current
+        val viewportWidth = with(density) { (maxWidth - 32.dp).roundToPx().coerceAtLeast(0) }
+        val gap = with(density) { 6.dp.roundToPx() }
+        val rowGap = with(density) { 2.dp.roundToPx() }
+        LaunchedEffect(selectedIndex, collapsed, viewportWidth, requesters) {
+            // Reveal the selection after the new row positions have been measured.
+            withFrameNanos { }
+            requesters.getOrNull(selectedIndex)?.bringIntoView()
+        }
+        Layout(
+            modifier = Modifier.horizontalScroll(scrollState).padding(horizontal = 16.dp, vertical = 2.dp),
+            content = {
+                feeds.forEachIndexed { index, feed ->
+                    key(feed.key) {
+                        val selected = index == selectedIndex
+                        Box(
+                            contentAlignment = Alignment.CenterStart,
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .bringIntoViewRequester(requesters[index])
+                                .semantics { this.selected = selected }
+                                .clickable { onSelect(index) },
+                        ) {
+                            Text(
+                                text = feed.title,
+                                maxLines = 1,
+                                softWrap = false,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = when {
+                                    selected -> MaterialTheme.colorScheme.onPrimary
+                                    dark -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    else -> Color(0xFF3C3C43)
+                                },
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(
+                                        when {
+                                            selected -> MaterialTheme.colorScheme.primary
+                                            dark -> Color(0xFF1C1C1E).copy(alpha = 0.9f)
+                                            else -> Color.White.copy(alpha = 0.85f)
+                                        },
+                                    )
+                                    .padding(horizontal = 15.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
+                }
+            },
+        ) { measurables, constraints ->
+            val placeables = measurables.map { it.measure(Constraints()) }
+            val flow = layoutCache.layout(
+                sizes = placeables.map { NodeChipSize(it.width, it.height) },
+                viewportWidth = viewportWidth,
+                maxRows = if (collapsed) 1 else 3,
+                columnSpacing = gap,
+                rowSpacing = rowGap,
             )
+            layout(constraints.constrainWidth(flow.width), constraints.constrainHeight(flow.height)) {
+                placeables.forEachIndexed { index, placeable ->
+                    val frame = flow.frames[index]
+                    placeable.placeRelative(frame.x, frame.y)
+                }
+            }
         }
     }
 }
@@ -228,8 +305,10 @@ private fun FeedPage(
     hasMore: Boolean,
     paginationToken: Long,
     isActive: Boolean,
+    onNodesCollapsed: (Boolean) -> Unit,
     /** 非空 = 列表来自本地快照，值是快照时间（毫秒）。 */
     cachedAt: Long?,
+    emptyMessage: String,
     featuredBadge: String,
     readIds: Set<Long> = emptySet(),
     offlineIds: Set<Long> = emptySet(),
@@ -240,6 +319,20 @@ private fun FeedPage(
     onTopicClick: (Long) -> Unit,
     onNodeClick: (String) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    var nodesCollapsed by rememberSaveable { mutableStateOf(false) }
+    val onCollapse by rememberUpdatedState(onNodesCollapsed)
+    val density = LocalDensity.current.density
+    LaunchedEffect(isActive, listState, density) {
+        if (!isActive) return@LaunchedEffect
+        snapshotFlow {
+            homeNodesCollapsed(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset / density, nodesCollapsed)
+        }.collect { collapsed ->
+            // snapshotFlow emits only when the derived state changes, not on every pixel.
+            nodesCollapsed = collapsed
+            onCollapse(collapsed)
+        }
+    }
     PullToRefreshBox(
         isRefreshing = isLoading && topics != null,
         onRefresh = onRefresh,
@@ -270,6 +363,7 @@ private fun FeedPage(
             }
             topics.isEmpty() -> {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = TAB_BAR_CLEARANCE),
                 ) {
@@ -282,11 +376,15 @@ private fun FeedPage(
                             },
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                text = "暂无话题",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            if (error != null) {
+                                FeedRefreshError(error, !isLoading && !isLoadingMore, onRefresh)
+                            } else {
+                                Text(
+                                    text = emptyMessage,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                     if (hasMore || loadMoreError != null) {
@@ -310,6 +408,7 @@ private fun FeedPage(
                 val featured = topics.first()
                 val rest = topics.drop(1)
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = 16.dp,
@@ -317,7 +416,11 @@ private fun FeedPage(
                         bottom = TAB_BAR_CLEARANCE,
                     ),
                 ) {
-                    if (cachedAt != null) {
+                    if (error != null) {
+                        item(key = "refresh-error") {
+                            FeedRefreshError(error, !isLoading && !isLoadingMore, onRefresh)
+                        }
+                    } else if (cachedAt != null) {
                         item(key = "offline-banner") {
                             OfflineNoticeBar(Modifier.padding(bottom = 10.dp), cachedAt = cachedAt)
                         }
@@ -369,6 +472,23 @@ private fun FeedPage(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FeedRefreshError(message: String, canRetry: Boolean, onRetry: () -> Unit): Unit {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(
+            text = "刷新失败，当前显示上次内容",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.error,
+        )
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = onRetry, enabled = canRetry) { Text("重试") }
     }
 }
 
