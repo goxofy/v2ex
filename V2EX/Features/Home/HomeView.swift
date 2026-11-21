@@ -20,7 +20,6 @@ struct HomeView: View {
     /// Per-feed scroll offsets, so swiping between categories doesn't lose your place.
     @State private var scrollPositions: [HomeViewModel.Feed: ScrollPosition] = [:]
     @State private var collapsedNodes: [HomeViewModel.Feed: Bool] = [:]
-    @State private var nodeBarHeight: CGFloat = 112
     private var nodesCollapsed: Bool { collapsedNodes[model.feed] ?? false }
     /// `.task` 会在从话题详情返回时重新启动。记录已经消费过的打开请求，
     /// 避免把用户当前分类重复重置为请求最初携带的「全部」。
@@ -132,43 +131,9 @@ struct HomeView: View {
     }
 
     private var feedFilterBar: some View {
-        HStack(spacing: 4) {
-            GeometryReader { geometry in
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HomeNodeFlowLayout(
-                            viewportWidth: max(0, geometry.size.width - Theme.Metric.screenPadding * 2),
-                            maxRows: nodesCollapsed ? 1 : 3
-                        ) {
-                            ForEach(feeds, id: \.self) { feed in
-                                FilterChip(title: feed.title, isSelected: model.feed == feed, minimumHeight: 36) {
-                                    model.feed = feed
-                                }
-                                .fixedSize()
-                                .accessibilityLabel(feed.title)
-                                .id(feed)
-                            }
-                        }
-                        .padding(.horizontal, Theme.Metric.screenPadding)
-                        .padding(.vertical, 2)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                            guard nodeBarHeight != height else { return }
-                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { nodeBarHeight = height }
-                        }
-                    }
-                    .accessibilityHint(nodesCollapsed ? "单行节点列表，可左右滑动" : "最多三行节点列表，可左右滑动")
-                    .task(id: HomeNodeRailIdentity(feed: model.feed, feeds: feeds, collapsed: nodesCollapsed, width: geometry.size.width)) {
-                        // Wait for the new flow positions before revealing the selected chip.
-                        await Task.yield()
-                        guard !Task.isCancelled else { return }
-                        proxy.scrollTo(model.feed, anchor: .center)
-                    }
-                }
-            }
-            .frame(height: nodeBarHeight)
-            Button { editingTabs = true } label: { Image(systemName: "slider.horizontal.3").padding(10) }
-                .accessibilityLabel("编辑首页标签")
-        }.readableColumn()
+        HomeNodeBar(feeds: feeds, selected: $model.feed, collapsed: nodesCollapsed) {
+            editingTabs = true
+        }
     }
 
     @ViewBuilder
@@ -311,6 +276,52 @@ struct HomeView: View {
     }
 }
 
+private struct HomeNodeBar: View {
+    let feeds: [HomeFeed]
+    @Binding var selected: HomeFeed
+    let collapsed: Bool
+    let onEdit: () -> Void
+    @State private var viewportWidth: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HomeNodeFlowLayout(
+                        viewportWidth: max(0, viewportWidth - Theme.Metric.screenPadding * 2),
+                        maxRows: collapsed ? 1 : 3
+                    ) {
+                        ForEach(feeds, id: \.self) { feed in
+                            FilterChip(title: feed.title, isSelected: selected == feed, minimumHeight: 36) {
+                                selected = feed
+                            }
+                            .fixedSize()
+                            .accessibilityLabel(feed.title)
+                            .id(feed)
+                        }
+                    }
+                    .padding(.horizontal, Theme.Metric.screenPadding)
+                    .padding(.vertical, 2)
+                }
+                // Use intrinsic content height, not a geometry -> @State -> frame feedback loop.
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    viewportWidth = width
+                }
+                .accessibilityHint(collapsed ? "单行节点列表，可左右滑动" : "最多三行节点列表，可左右滑动")
+                .task(id: HomeNodeRailIdentity(feed: selected, feeds: feeds, collapsed: collapsed, width: viewportWidth)) {
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo(selected, anchor: .center)
+                }
+            }
+            Button(action: onEdit) { Image(systemName: "slider.horizontal.3").padding(10) }
+                .accessibilityLabel("编辑首页标签")
+        }
+        .readableColumn()
+    }
+}
+
 private struct HomeNodeRailIdentity: Hashable {
     let feed: HomeFeed
     let feeds: [HomeFeed]
@@ -322,12 +333,20 @@ private struct HomeNodeFlowLayout: Layout {
     let viewportWidth: CGFloat
     let maxRows: Int
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        arrangement(subviews).size
+    func makeCache(subviews: Subviews) -> HomeNodeLayoutCache {
+        HomeNodeLayoutCache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> Void {
-        let layout = arrangement(subviews)
+    func updateCache(_ cache: inout HomeNodeLayoutCache, subviews: Subviews) -> Void {
+        cache.update(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout HomeNodeLayoutCache) -> CGSize {
+        cache.layout(viewportWidth: viewportWidth, maxRows: maxRows).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout HomeNodeLayoutCache) -> Void {
+        let layout = cache.layout(viewportWidth: viewportWidth, maxRows: maxRows)
         for (index, subview) in subviews.enumerated() {
             let frame = layout.frames[index]
             subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
@@ -335,10 +354,6 @@ private struct HomeNodeFlowLayout: Layout {
         }
     }
 
-    private func arrangement(_ subviews: Subviews) -> HomeNodeLayout {
-        HomeNodeLayout(sizes: subviews.map { $0.sizeThatFits(.unspecified) },
-                       viewportWidth: viewportWidth, maxRows: maxRows)
-    }
 }
 
 // MARK: - Community pulse

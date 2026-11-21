@@ -56,6 +56,24 @@ internal class HomeNodeLayout(
     }
 }
 
+/** Retain expanded/collapsed arrangements while animateContentSize changes only height. */
+internal class HomeNodeLayoutCache {
+    private data class Metrics(val sizes: List<NodeChipSize>, val width: Int, val columnGap: Int, val rowGap: Int)
+    private var metrics: Metrics? = null
+    private val layouts = mutableMapOf<Int, HomeNodeLayout>()
+
+    fun layout(sizes: List<NodeChipSize>, viewportWidth: Int, maxRows: Int, columnSpacing: Int, rowSpacing: Int): HomeNodeLayout {
+        val next = Metrics(sizes, viewportWidth, columnSpacing, rowSpacing)
+        if (metrics != next) {
+            metrics = next
+            layouts.clear()
+        }
+        return layouts.getOrPut(maxRows) {
+            HomeNodeLayout(sizes, viewportWidth, maxRows, columnSpacing, rowSpacing)
+        }
+    }
+}
+
 internal fun homeNodesCollapsed(firstVisibleIndex: Int, offsetDp: Float, wasCollapsed: Boolean): Boolean {
     if (firstVisibleIndex > 0) return true
     if (!offsetDp.isFinite()) return wasCollapsed

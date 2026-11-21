@@ -69,6 +69,22 @@ Scrolling the topic list more than 120pt/dp from the top collapses the tabs to o
 
 Swift and Android unit tests cover natural widths, row-major order, all 15 chips, three-row overflow, long titles, single-row collapse, sparse/empty input, variable heights, invalid metrics and threshold hysteresis. Swift additionally checks viewport/inset resize suppression. These geometry tests and local type checks do not replace device validation of scroll anchoring and animation.
 
+The iOS header now uses intrinsic scroll-content height instead of feeding measured height back into HomeView state and starting a second animation. Natural chip sizes and both row arrangements are cached through SwiftUI's Layout cache lifecycle; width/content changes invalidate the cache, while identical updateCache calls preserve it. A separate header view owns width observations so these do not rebuild the topic-list body. The original 220ms transition, raw geometry/inset checks, thresholds and per-feed state remain intact. Unit tests demonstrate only two state changes during a 2,002-sample scroll up/down; the original scroll callback already had this deduplication, so it was not writing collapse state every frame.
+
+Android does not have the iOS height-observation feedback loop. It now caches row arrangements across layout passes and derives the collapse Boolean inside snapshotFlow, rather than notifying the parent for each pixel. Tests cover cache reuse/invalidation and actual snapshotFlow emissions across pixel-by-pixel scrolling.
+
+For an isolated old/new iOS header comparison (requires the `db315b9` baseline commit and an iOS 18+ simulator SDK):
+
+```sh
+python3 tests/check-home-node-presentation.py
+# Optional: provide a booted disposable simulator to run both variants.
+python3 tests/check-home-node-presentation.py --device <simulator-uuid>
+```
+
+The script extracts production header/layout expressions, uses stub feed/theme/chip dependencies and synthetic topic rows, and builds a temporary simulator app. It never runs the full application or accesses an account. With `--device`, it installs a test-only bundle, runs ten 220ms transitions per variant after warm-up, checks equal endpoint heights and actual intermediate animated heights, then uninstalls the bundle. Use a disposable simulator without another copy of that test bundle. It neither boots nor deletes the supplied simulator.
+
+On the local iOS 18.3 simulator, the final comparison measured 326 vs 1 arrangement calculations, 4,890 vs 150 chip measurements, 20 vs 10 parent body evaluations and 10 vs 0 height-state writes (old vs new). The expanded arrangement was warmed up before counting; only the first collapsed arrangement needed solving in the cached variant. Both retained 116pt/40pt endpoint heights and animated intermediate frames. Counts vary by simulator scheduling. This verifies removal of redundant work, not device FPS, iOS 26 safeAreaBar behavior, or absence of gesture-time frame drops. Device validation remains necessary.
+
 On device, check small/large phones, landscape, larger text, one tab, all 15 tabs, `问与答`, mixed long/short names, and a title wider than the screen. Edit/reorder/remove the selected tab, swipe between feeds at different list offsets, and open a topic then return. Scroll slowly through the collapse threshold, reverse direction during animation, fling upward/downward, tap the status bar to return to the top, and pull to refresh. Ensure there is no repeated collapse/expand loop, row overlap or title truncation, selection stays reachable, and the edit button remains visible. The confirmed iOS refresh toast and cancellation isolation are unchanged. Android retains its existing error and offline notices.
 
 Local OSLog events in subsystem `com.vibe.v2ex`, category `feed-refresh`, correlate refresh source, HTTP start/status, parsed count, and commit/discard outcome using request IDs. They contain no account data, cookies, tokens or response bodies, and are not uploaded. A full IPA build and device UI validation are still required; the standalone tests do not exercise SwiftUI's refresh gesture or reproduce the reported hours-long behavior.

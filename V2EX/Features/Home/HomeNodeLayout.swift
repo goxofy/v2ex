@@ -2,7 +2,7 @@ import Foundation
 
 /// Packs natural chip sizes in configuration order: left to right, then down.
 /// If three rows do not fit the viewport, widen the scrollable canvas, never a chip.
-struct HomeNodeLayout {
+final class HomeNodeLayout {
     let frames: [CGRect]
     let size: CGSize
 
@@ -52,6 +52,35 @@ struct HomeNodeLayout {
             x += size.width + gap
         }
         return rows
+    }
+}
+
+/// One viewport's arrangements; height animation does not invalidate natural chip sizes.
+struct HomeNodeLayoutCache {
+    private(set) var sizes: [CGSize]
+    private var viewportWidth: CGFloat?
+    private var layouts: [Int: HomeNodeLayout] = [:]
+
+    init(sizes: [CGSize]) {
+        self.sizes = sizes
+    }
+
+    mutating func update(sizes: [CGSize]) -> Void {
+        guard self.sizes != sizes else { return }
+        self.sizes = sizes
+        layouts.removeAll(keepingCapacity: true)
+    }
+
+    mutating func layout(viewportWidth: CGFloat, maxRows: Int) -> HomeNodeLayout {
+        let width = viewportWidth.isFinite ? max(0, viewportWidth) : 0
+        if self.viewportWidth != width {
+            self.viewportWidth = width
+            layouts.removeAll(keepingCapacity: true)
+        }
+        if let layout = layouts[maxRows] { return layout }
+        let layout = HomeNodeLayout(sizes: sizes, viewportWidth: width, maxRows: maxRows)
+        layouts[maxRows] = layout
+        return layout
     }
 }
 

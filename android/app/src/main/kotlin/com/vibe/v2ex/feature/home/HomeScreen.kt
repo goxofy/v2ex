@@ -225,6 +225,7 @@ private fun FeedChipRail(
     val dark = LocalV2Dark.current
     val scrollState = rememberScrollState()
     val requesters = remember(feeds) { feeds.map { BringIntoViewRequester() } }
+    val layoutCache = remember { HomeNodeLayoutCache() }
     BoxWithConstraints(Modifier.fillMaxWidth().animateContentSize(tween(220))) {
         val density = LocalDensity.current
         val viewportWidth = with(density) { (maxWidth - 32.dp).roundToPx().coerceAtLeast(0) }
@@ -277,7 +278,7 @@ private fun FeedChipRail(
             },
         ) { measurables, constraints ->
             val placeables = measurables.map { it.measure(Constraints()) }
-            val flow = HomeNodeLayout(
+            val flow = layoutCache.layout(
                 sizes = placeables.map { NodeChipSize(it.width, it.height) },
                 viewportWidth = viewportWidth,
                 maxRows = if (collapsed) 1 else 3,
@@ -324,11 +325,13 @@ private fun FeedPage(
     val density = LocalDensity.current.density
     LaunchedEffect(isActive, listState, density) {
         if (!isActive) return@LaunchedEffect
-        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-            .collect { (index, offset) ->
-                nodesCollapsed = homeNodesCollapsed(index, offset / density, nodesCollapsed)
-                onCollapse(nodesCollapsed)
-            }
+        snapshotFlow {
+            homeNodesCollapsed(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset / density, nodesCollapsed)
+        }.collect { collapsed ->
+            // snapshotFlow emits only when the derived state changes, not on every pixel.
+            nodesCollapsed = collapsed
+            onCollapse(collapsed)
+        }
     }
     PullToRefreshBox(
         isRefreshing = isLoading && topics != null,
