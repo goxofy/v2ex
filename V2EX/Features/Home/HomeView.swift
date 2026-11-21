@@ -281,40 +281,24 @@ private struct HomeNodeBar: View {
     @Binding var selected: HomeFeed
     let collapsed: Bool
     let onEdit: () -> Void
-    @State private var viewportWidth: CGFloat = 0
 
     var body: some View {
         HStack(spacing: 4) {
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HomeNodeFlowLayout(
-                        viewportWidth: max(0, viewportWidth - Theme.Metric.screenPadding * 2),
-                        maxRows: collapsed ? 1 : 3
-                    ) {
-                        ForEach(feeds, id: \.self) { feed in
-                            FilterChip(title: feed.title, isSelected: selected == feed, minimumHeight: 36) {
-                                selected = feed
-                            }
-                            .fixedSize()
-                            .accessibilityLabel(feed.title)
-                            .id(feed)
-                        }
-                    }
-                    .padding(.horizontal, Theme.Metric.screenPadding)
-                    .padding(.vertical, 2)
-                }
-                // Use intrinsic content height, not a geometry -> @State -> frame feedback loop.
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-                    viewportWidth = width
-                }
-                .accessibilityHint(collapsed ? "单行节点列表，可左右滑动" : "最多三行节点列表，可左右滑动")
-                .task(id: HomeNodeRailIdentity(feed: selected, feeds: feeds, collapsed: collapsed, width: viewportWidth)) {
-                    await Task.yield()
-                    guard !Task.isCancelled else { return }
-                    proxy.scrollTo(selected, anchor: .center)
-                }
+            // Keep both scroll views mounted: changing the content width of the active
+            // scroll view while also scrollTo-ing its selection causes offset jumps.
+            HomeNodeTransitionLayout(progress: collapsed ? 1 : 0) {
+                HomeNodeRail(feeds: feeds, selected: selected, maxRows: 3) { selected = $0 }
+                    .equatable()
+                    .opacity(collapsed ? 0 : 1)
+                    .allowsHitTesting(!collapsed)
+                    .accessibilityHidden(collapsed)
+                HomeNodeRail(feeds: feeds, selected: selected, maxRows: 1) { selected = $0 }
+                    .equatable()
+                    .opacity(collapsed ? 1 : 0)
+                    .allowsHitTesting(collapsed)
+                    .accessibilityHidden(!collapsed)
             }
+            .clipped()
             Button(action: onEdit) { Image(systemName: "slider.horizontal.3").padding(10) }
                 .accessibilityLabel("编辑首页标签")
         }
@@ -322,11 +306,82 @@ private struct HomeNodeBar: View {
     }
 }
 
+private struct HomeNodeRail: View, Equatable {
+    let feeds: [HomeFeed]
+    let selected: HomeFeed
+    let maxRows: Int
+    let onSelect: (HomeFeed) -> Void
+    @State private var viewportWidth: CGFloat = 0
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        // Collapse is intentionally not an input. The callback only updates the
+        // enclosing bar's stable selection binding; value changes still rebuild both rails.
+        lhs.feeds == rhs.feeds && lhs.selected == rhs.selected && lhs.maxRows == rhs.maxRows
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HomeNodeFlowLayout(
+                    viewportWidth: max(0, viewportWidth - Theme.Metric.screenPadding * 2),
+                    maxRows: maxRows
+                ) {
+                    ForEach(feeds, id: \.self) { feed in
+                        FilterChip(title: feed.title, isSelected: selected == feed, minimumHeight: 36) {
+                            onSelect(feed)
+                        }
+                        .fixedSize()
+                        .accessibilityLabel(feed.title)
+                        .id(feed)
+                    }
+                }
+                .padding(.horizontal, Theme.Metric.screenPadding)
+                .padding(.vertical, 2)
+            }
+            // Use intrinsic content height, not a geometry -> @State -> frame feedback loop.
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                viewportWidth = width
+            }
+            .accessibilityHint(maxRows == 1 ? "单行节点列表，可左右滑动" : "最多三行节点列表，可左右滑动")
+            .task(id: HomeNodeRailIdentity(feed: selected, feeds: feeds, width: viewportWidth)) {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(selected, anchor: .center)
+            }
+        }
+    }
+}
+
 private struct HomeNodeRailIdentity: Hashable {
     let feed: HomeFeed
     let feeds: [HomeFeed]
-    let collapsed: Bool
     let width: CGFloat
+}
+
+private struct HomeNodeTransitionLayout: Layout {
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) }
+        let expanded = sizes.first ?? .zero
+        let collapsed = sizes.last ?? expanded
+        return CGSize(width: max(expanded.width, collapsed.width),
+                      height: HomeNodeTransition(progress: progress).height(expanded: expanded.height, collapsed: collapsed.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> Void {
+        for subview in subviews {
+            // Never propose the animated viewport height to either rail's scroll view.
+            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            subview.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(size))
+        }
+    }
 }
 
 private struct HomeNodeFlowLayout: Layout {
