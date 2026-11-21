@@ -84,6 +84,16 @@ struct HomeNodeLayoutCache {
     }
 }
 
+/// Only the outer viewport changes height; both rails keep their full-size content.
+struct HomeNodeTransition {
+    let progress: CGFloat
+
+    func height(expanded: CGFloat, collapsed: CGFloat) -> CGFloat {
+        let fraction = progress.isFinite ? min(1, max(0, progress)) : 0
+        return expanded + (collapsed - expanded) * fraction
+    }
+}
+
 struct HomeNodeScrollSample: Equatable {
     let offset: CGFloat
     let topInset: CGFloat

@@ -95,6 +95,42 @@ final class HomeTabsTests: XCTestCase {
         XCTAssertEqual(second.layout(viewportWidth: 320, maxRows: 3).frames.map(\.size), sizes)
     }
 
+    func testTransitionPreservesEndpointsAndInterpolatesHeight() -> Void {
+        XCTAssertEqual(HomeNodeTransition(progress: 0).height(expanded: 116, collapsed: 40), 116)
+        XCTAssertEqual(HomeNodeTransition(progress: 1).height(expanded: 116, collapsed: 40), 40)
+        XCTAssertEqual(HomeNodeTransition(progress: 0.5).height(expanded: 116, collapsed: 40), 78)
+        for step in 0...100 {
+            let progress = CGFloat(step) / 100
+            XCTAssertEqual(HomeNodeTransition(progress: progress).height(expanded: 40, collapsed: 40), 40)
+        }
+    }
+
+    func testTransitionClampsInvalidProgress() -> Void {
+        for progress: CGFloat in [-1, -.infinity, .infinity, .nan] {
+            XCTAssertEqual(HomeNodeTransition(progress: progress).height(expanded: 116, collapsed: 40), 116)
+        }
+        XCTAssertEqual(HomeNodeTransition(progress: 2).height(expanded: 116, collapsed: 40), 40)
+    }
+
+    func testTransitionCanReverseWithoutChangingRailGeometry() -> Void {
+        let sizes = (0..<15).map { CGSize(width: 50 + $0 * 13, height: 36) }
+        var expandedCache = HomeNodeLayoutCache(sizes: sizes)
+        var collapsedCache = HomeNodeLayoutCache(sizes: sizes)
+        let expanded = expandedCache.layout(viewportWidth: 320, maxRows: 3)
+        let collapsed = collapsedCache.layout(viewportWidth: 320, maxRows: 1)
+        let steps = Array(0...60) + Array((0...60).reversed())
+        var previous = expanded.size.height
+        for step in steps {
+            let height = HomeNodeTransition(progress: CGFloat(step) / 100)
+                .height(expanded: expanded.size.height, collapsed: collapsed.size.height)
+            XCTAssertLessThanOrEqual(abs(height - previous), 0.761)
+            XCTAssertTrue(expandedCache.layout(viewportWidth: 320, maxRows: 3) === expanded)
+            XCTAssertTrue(collapsedCache.layout(viewportWidth: 320, maxRows: 1) === collapsed)
+            previous = height
+        }
+        XCTAssertEqual(previous, expanded.size.height)
+    }
+
     func testCollapseUsesSeparateScrollThresholds() -> Void {
         let previous = HomeNodeScrollSample(offset: 0, topInset: 112, viewportHeight: 600)
         for (offset, collapsed, expected): (CGFloat, Bool, Bool) in [
