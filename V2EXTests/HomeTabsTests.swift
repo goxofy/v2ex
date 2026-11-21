@@ -57,6 +57,44 @@ final class HomeTabsTests: XCTestCase {
         XCTAssertTrue(invalid.size.width.isFinite)
     }
 
+    func testRepeatedLayoutPassesReuseBothArrangements() -> Void {
+        let sizes = (0..<15).map { CGSize(width: 50 + $0 * 13, height: 36) }
+        var cache = HomeNodeLayoutCache(sizes: sizes)
+        let expanded = cache.layout(viewportWidth: 320, maxRows: 3)
+        let collapsed = cache.layout(viewportWidth: 320, maxRows: 1)
+        for _ in 0..<240 {
+            cache.update(sizes: sizes)
+            XCTAssertTrue(cache.layout(viewportWidth: 320, maxRows: 3) === expanded)
+            XCTAssertTrue(cache.layout(viewportWidth: 320, maxRows: 1) === collapsed)
+        }
+        XCTAssertEqual(expanded.frames, HomeNodeLayout(sizes: sizes, viewportWidth: 320, maxRows: 3).frames)
+        XCTAssertEqual(collapsed.frames, HomeNodeLayout(sizes: sizes, viewportWidth: 320, maxRows: 1).frames)
+    }
+
+    func testLayoutCacheInvalidatesForChangedContentAndWidth() -> Void {
+        var cache = HomeNodeLayoutCache(sizes: [CGSize(width: 60, height: 36)])
+        let first = cache.layout(viewportWidth: 320, maxRows: 3)
+        cache.update(sizes: [CGSize(width: 80, height: 40)])
+        let changed = cache.layout(viewportWidth: 320, maxRows: 3)
+        XCTAssertFalse(first === changed)
+        XCTAssertEqual(changed.frames.first?.size, CGSize(width: 80, height: 40))
+        let rotated = cache.layout(viewportWidth: 500, maxRows: 3)
+        XCTAssertFalse(changed === rotated)
+        XCTAssertGreaterThanOrEqual(rotated.size.width, 500)
+        cache.update(sizes: [])
+        XCTAssertEqual(cache.layout(viewportWidth: 500, maxRows: 3).frames, [])
+    }
+
+    func testLayoutCachesAreIndependentAndPreserveReorderedChips() -> Void {
+        let sizes = [CGSize(width: 60, height: 36), CGSize(width: 90, height: 36)]
+        var first = HomeNodeLayoutCache(sizes: sizes)
+        var second = HomeNodeLayoutCache(sizes: sizes)
+        XCTAssertFalse(first.layout(viewportWidth: 320, maxRows: 3) === second.layout(viewportWidth: 320, maxRows: 3))
+        first.update(sizes: sizes.reversed())
+        XCTAssertEqual(first.layout(viewportWidth: 320, maxRows: 3).frames.map(\.size), sizes.reversed())
+        XCTAssertEqual(second.layout(viewportWidth: 320, maxRows: 3).frames.map(\.size), sizes)
+    }
+
     func testCollapseUsesSeparateScrollThresholds() -> Void {
         let previous = HomeNodeScrollSample(offset: 0, topInset: 112, viewportHeight: 600)
         for (offset, collapsed, expected): (CGFloat, Bool, Bool) in [
@@ -67,6 +105,20 @@ final class HomeTabsTests: XCTestCase {
             let sample = HomeNodeScrollSample(offset: offset, topInset: 112, viewportHeight: 600)
             XCTAssertEqual(sample.collapsed(after: previous, wasCollapsed: collapsed), expected)
         }
+    }
+
+    func testPixelScrollOnlyChangesCollapseStateAtThresholds() -> Void {
+        var previous = HomeNodeScrollSample(offset: 0, topInset: 112, viewportHeight: 600)
+        var collapsed = false
+        var writes = 0
+        for offset in Array(0...1000) + Array((0...1000).reversed()) {
+            let sample = HomeNodeScrollSample(offset: CGFloat(offset), topInset: 112, viewportHeight: 600)
+            let next = sample.collapsed(after: previous, wasCollapsed: collapsed)
+            if next != collapsed { writes += 1; collapsed = next }
+            previous = sample
+        }
+        XCTAssertEqual(writes, 2)
+        XCTAssertFalse(collapsed)
     }
 
     func testHeaderResizeCannotTriggerCollapseOscillation() -> Void {
