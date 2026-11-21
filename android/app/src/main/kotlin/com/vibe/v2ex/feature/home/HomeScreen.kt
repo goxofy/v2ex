@@ -16,7 +16,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -92,7 +100,7 @@ fun HomeScreen(
             initialPage = uiState.currentIndex,
             pageCount = { uiState.feeds.size },
         )
-        val railState = rememberLazyListState()
+        val railState = rememberLazyGridState()
         val scope = rememberCoroutineScope()
 
         LaunchedEffect(pagerState.currentPage) {
@@ -200,39 +208,51 @@ fun HomeScreen(
 private fun FeedChipRail(
     feeds: List<HomeFeed>,
     selectedIndex: Int,
-    railState: androidx.compose.foundation.lazy.LazyListState,
+    railState: LazyGridState,
     onSelect: (Int) -> Unit,
-) {
+): Unit {
     val dark = LocalV2Dark.current
-    LazyRow(
+    LazyHorizontalGrid(
+        rows = GridCells.Fixed(3),
         state = railState,
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp).height(140.dp),
     ) {
-        itemsIndexed(feeds, key = { _, feed -> feed.key }) { index, feed ->
+        gridItemsIndexed(feeds, key = { _, feed -> feed.key }) { index, feed ->
             val selected = index == selectedIndex
-            Text(
-                text = feed.title,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                color = when {
-                    selected -> MaterialTheme.colorScheme.onPrimary
-                    dark -> MaterialTheme.colorScheme.onSurfaceVariant
-                    else -> Color(0xFF3C3C43)
-                },
+            Box(
+                contentAlignment = Alignment.CenterStart,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(
-                        when {
-                            selected -> MaterialTheme.colorScheme.primary
-                            dark -> Color(0xFF1C1C1E).copy(alpha = 0.9f)
-                            else -> Color.White.copy(alpha = 0.85f)
-                        },
-                    )
-                    .clickable { onSelect(index) }
-                    .padding(horizontal = 15.dp, vertical = 7.dp),
-            )
+                    .height(44.dp)
+                    .widthIn(max = 180.dp)
+                    .semantics { this.selected = selected }
+                    .clickable { onSelect(index) },
+            ) {
+                Text(
+                    text = feed.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = when {
+                        selected -> MaterialTheme.colorScheme.onPrimary
+                        dark -> MaterialTheme.colorScheme.onSurfaceVariant
+                        else -> Color(0xFF3C3C43)
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            when {
+                                selected -> MaterialTheme.colorScheme.primary
+                                dark -> Color(0xFF1C1C1E).copy(alpha = 0.9f)
+                                else -> Color.White.copy(alpha = 0.85f)
+                            },
+                        )
+                        .padding(horizontal = 15.dp, vertical = 7.dp),
+                )
+            }
         }
     }
 }
