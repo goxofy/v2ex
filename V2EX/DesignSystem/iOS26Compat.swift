@@ -61,6 +61,16 @@ extension View {
         }
     }
 
+    /// 自管顶部内容不叠加系统滚动边缘模糊；保留底部和横向边缘效果。
+    @ViewBuilder
+    func hideTopScrollEdgeEffect() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            self
+        }
+    }
+
     /// 悬浮标签栏不自动收起：iOS 26 专属；低版本标签栏本身不收起，直接忽略。
     /// 对应 `.tabBarMinimizeBehavior(.never)`。
     @ViewBuilder
