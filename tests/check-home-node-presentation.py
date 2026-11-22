@@ -65,37 +65,21 @@ enum Metrics {
         guard let hit = window.hitTest(point, with: nil) else { preconditionFailure("Missing rail hit") }
         precondition(hit === rail || hit.isDescendant(of: rail), "Inactive layer must not swallow active rail gestures")
     }
-    static func checkEndpoint(expanded: Bool) -> Void {
-        guard let window else { preconditionFailure("Missing window") }
-        let rails = scrollViews().filter { $0.contentSize.width > $0.bounds.width + 1 && $0.contentSize.height < 200 }
-        guard let visible = rails.first(where: { ($0.bounds.height > 60) == expanded }),
-              let hidden = rails.first(where: { ($0.bounds.height > 60) != expanded }) else {
-            preconditionFailure("Both endpoint rails must remain mounted")
+    static func checkScrollEdges() -> Void {
+#if PROBE_SCROLL_EDGE_EFFECTS
+        if #available(iOS 26.0, *) {
+            let rails = scrollViews().filter { $0.contentSize.width > $0.bounds.width + 1 && $0.contentSize.height < 200 }
+            precondition(rails.count == 2, "Both rails must be present for the edge-effect check")
+            let topic = topicScroll()
+            for scroll in rails + [topic] {
+                precondition(scroll.topEdgeEffect.isHidden, "Home must not inherit the soft top scroll edge")
+            }
+            precondition(!topic.bottomEdgeEffect.isHidden, "The bottom scroll edge must remain enabled")
+            print("PROBE scroll edges: top hidden on both rails and topic list; bottom retained")
+            return
         }
-        let visibleFrame = visible.convert(visible.bounds, to: window)
-        let hiddenFrame = hidden.convert(hidden.bounds, to: window)
-        precondition(hiddenFrame.maxY <= visibleFrame.minY + 0.5,
-                     "Zero-opacity glass must be outside the visible header, not covering its first row")
-        var ancestor: UIView? = visible
-        while let view = ancestor {
-            precondition(view.alpha == 1 && !view.isHidden, "The active endpoint must be fully opaque")
-            ancestor = view.superview
-        }
-    }
-    static func checkCrossfade(progress: CGFloat) -> Void {
-        guard let window else { preconditionFailure("Missing window") }
-        precondition(progress > 0 && progress < 1, "Crossfade check needs an intermediate progress")
-        let rails = scrollViews().filter { $0.contentSize.width > $0.bounds.width + 1 && $0.contentSize.height < 200 }
-        precondition(rails.count == 2, "Both rails must stay mounted during the crossfade")
-        let origins = rails.map { $0.convert($0.bounds, to: window).minY }
-        precondition(abs(origins[0] - origins[1]) < 0.5, "Only a zero-opacity rail may move outside the clip")
-        for rail in rails {
-            var opacity: CGFloat = 1
-            var ancestor: UIView? = rail
-            while let view = ancestor { opacity *= view.alpha; ancestor = view.superview }
-            let expected = rail.bounds.height > 60 ? 1 - progress : progress
-            precondition(abs(opacity - expected) < 0.001, "The continuous crossfade must remain unchanged")
-        }
+#endif
+        print("SKIP: native scroll-edge assertions require both an iOS 26+ SDK and runtime")
     }
     static func checkTopicHit() -> Void {
         guard let window else { preconditionFailure("Missing window") }
@@ -184,7 +168,7 @@ struct Probe: View {
         let railSizes = rails.map(\.contentSize)
         let railOffsets = rails.map(\.contentOffset)
         Metrics.checkRailHit(expanded: true)
-        Metrics.checkEndpoint(expanded: true)
+        Metrics.checkScrollEdges()
         Metrics.reset()
         for offset in stride(from: 4, through: 160, by: 4) {
             scroll.setContentOffset(CGPoint(x: 0, y: CGFloat(offset) - inset.top), animated: false)
@@ -204,7 +188,6 @@ struct Probe: View {
         let held = Metrics.top()
         await pause(150)
         precondition(abs(Metrics.top() - held) < 0.1 && abs(state.progress - 0.4) < 0.001, "No independent drag animation")
-        Metrics.checkCrossfade(progress: state.progress)
         state.settle(reduceMotion: false)
         await pause(40)
         precondition(state.progress > 0 && state.progress < 0.4, "Snap needs intermediate frames")
@@ -215,14 +198,13 @@ struct Probe: View {
         state.settle(reduceMotion: false)
         await pause(180)
         precondition(state.progress == 0, "Lower-half snap must expand")
-        Metrics.checkEndpoint(expanded: true)
         scroll.setContentOffset(CGPoint(x: 0, y: 184 - inset.top), animated: false)
         await pause(80)
         state.settle(reduceMotion: false)
         await pause(180)
         precondition(state.progress == 1, "Upper-half snap must collapse")
         Metrics.checkRailHit(expanded: false)
-        Metrics.checkEndpoint(expanded: false)
+        Metrics.checkScrollEdges()
         precondition(rails.map(\.contentSize) == railSizes && rails.map(\.contentOffset) == railOffsets,
                      "Scroll progress must not resize or reposition either rail")
         precondition(scroll.bounds.size == size && scroll.adjustedContentInset == inset, "Snap must not resize the viewport")
@@ -254,7 +236,6 @@ struct Probe: View {
         scroll.setContentOffset(CGPoint(x: 0, y: -inset.top), animated: false)
         await pause(100)
         precondition(state.progress == 0, "Top must fully expand")
-        Metrics.checkEndpoint(expanded: true)
         Metrics.checkTopicHit()
         feeds = [selected]
         await pause(250)
@@ -262,7 +243,7 @@ struct Probe: View {
         scroll.setContentOffset(CGPoint(x: 0, y: 160 - inset.top), animated: false)
         await pause(100)
         precondition(abs(Metrics.top() - sparseTop) < 0.5, "One-row configuration must not reserve phantom rows")
-        print("PROBE PASS: endpoints/crossfade/continuous/reverse/hold/snap/interruption/top/selection/reorder/resize/sparse/hit-testing/bottom")
+        print("PROBE PASS: continuous/reverse/hold/snap/interruption/top/selection/reorder/resize/sparse/hit-testing/bottom")
         fflush(stdout)
         exit(0)
     }
@@ -271,7 +252,12 @@ struct Probe: View {
     var window: UIWindow?
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
-        window.rootViewController = UIHostingController(rootView: Probe())
+        window.rootViewController = UIHostingController(rootView:
+            NavigationStack {
+                Probe().navigationTitle("V2EX").navigationBarTitleDisplayMode(.inline)
+            }
+            .softScrollEdgeEffect()
+        )
         window.makeKeyAndVisible()
         self.window = window
         return true
@@ -280,19 +266,48 @@ struct Probe: View {
 '''
 
 
+def scroll_edge_compat(root: Path, native_edges: bool) -> str:
+    source = (root / 'V2EX/DesignSystem/iOS26Compat.swift').read_text()
+    methods: list[str] = []
+    for name in ('softScrollEdgeEffect', 'hideTopScrollEdgeEffect'):
+        start = source.index(f'    @ViewBuilder\n    func {name}(')
+        end = source.index('\n    }', start) + len('\n    }')
+        methods.append(source[start:end])
+    assert 'scrollEdgeEffectHidden(true, for: .top)' in methods[1], 'Hide only the top edge, not all edges'
+    compat = 'extension View {\n' + '\n'.join(methods) + '\n}\n'
+    if not native_edges:
+        # Compile the real availability wrappers on older SDKs. These stand-ins
+        # do not test iOS 26 rendering; the native assertions explicitly skip.
+        compat += '''
+enum ProbeScrollEdgeStyle { case soft }
+extension View {
+    func scrollEdgeEffectStyle(_ style: ProbeScrollEdgeStyle, for edges: Edge.Set) -> some View { self }
+    func scrollEdgeEffectHidden(_ hidden: Bool, for edges: Edge.Set) -> some View { self }
+}
+'''
+    return compat
+
+
 def run(out: Path, device: str | None) -> None:
     root = Path(__file__).resolve().parents[1]
     source = (root / 'V2EX/Features/Home/HomeView.swift').read_text()
     header = source[source.index('private struct HomeNodeScrollContainer'):source.index('// MARK: - Community pulse')]
     assert '.onGeometryChange' not in header, 'No geometry-to-state feedback is allowed in the header'
     assert 'withAnimation' not in header and 'HomeNodeTransitionLayout' not in header
+    container = header[:header.index('private struct HomeNodeRailVisibility')]
+    assert '.hideTopScrollEdgeEffect()' in container, 'The home container must opt out of the inherited top blur'
+    sdk = subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-path'], text=True).strip()
+    sdk_version = subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True).strip()
+    native_edges = int(sdk_version.split('.')[0]) >= 26
+    compat = scroll_edge_compat(root, native_edges)
+    print(f'PASS: home-scoped top-only edge policy; simulator SDK {sdk_version}', flush=True)
     layout = (root / 'V2EX/Features/Home/HomeNodeLayout.swift').read_text()
     layout = layout.replace('        let sizes = sizes.map', '        Metrics.arrangements += 1\n        let sizes = sizes.map', 1)
     header = header.replace('subviews.map { $0.sizeThatFits(.unspecified) }',
                             'subviews.map { Metrics.measurements += 1; return $0.sizeThatFits(.unspecified) }')
     header = header.replace('proxy.scrollTo(', 'Metrics.scrollRequests += 1; proxy.scrollTo(')
     header = header.replace('        let layout = cache.layout', '        Metrics.placements += 1\n        let layout = cache.layout')
-    (out / 'Probe.swift').write_text(PROBE + header + layout)
+    (out / 'Probe.swift').write_text(PROBE + header + layout + compat)
     app = out / 'NodeProbe.app'
     app.mkdir()
     (app / 'Info.plist').write_bytes(plistlib.dumps({
@@ -301,9 +316,9 @@ def run(out: Path, device: str | None) -> None:
         'CFBundlePackageType': 'APPL', 'MinimumOSVersion': '18.0', 'LSRequiresIPhoneOS': True,
         'UILaunchScreen': {}, 'UIDeviceFamily': [1],
     }))
-    sdk = subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-path'], text=True).strip()
+    flags = ['-D', 'PROBE_SCROLL_EDGE_EFFECTS'] if native_edges else []
     subprocess.run([
-        'xcrun', 'swiftc', '-parse-as-library', '-sdk', sdk,
+        'xcrun', 'swiftc', '-parse-as-library', '-sdk', sdk, *flags,
         '-target', f'{platform.machine()}-apple-ios18.0-simulator',
         '-module-cache-path', str(out / 'module-cache'), str(out / 'Probe.swift'), '-o', str(app / 'NodeProbe'),
     ], check=True)

@@ -325,6 +325,9 @@ private struct HomeNodeScrollContainer<Content: View>: View {
         // The opaque list clips the expanded rail at its moving top edge. Neither
         // rail, the list viewport, nor safe-area insets change size while scrolling.
         .clipped()
+        // These controls no longer live in a safeAreaBar. Keep the inherited soft
+        // top scroll edge from blurring them; the floating tab bar's bottom edge stays.
+        .hideTopScrollEdgeEffect()
     }
 
     private func header(maxRows: Int, width: CGFloat) -> some View {
@@ -348,15 +351,8 @@ private struct HomeNodeRailVisibility: ViewModifier {
 
     func body(content: Content) -> some View {
         let active = expanded ? state.progress < 0.5 : state.progress >= 0.5
-        let opacity = expanded ? 1 - state.progress : state.progress
         content
-            // Opacity alone leaves the inactive rail's glass at the same location.
-            // Move it outside the clip at endpoints without unmounting or changing layout.
-            .visualEffect { effect, geometry in
-                effect.offset(y: opacity == 0 ? -geometry.size.height : 0)
-            }
-            .clipped()
-            .opacity(opacity)
+            .opacity(expanded ? 1 - state.progress : state.progress)
             .allowsHitTesting(active)
             .accessibilityHidden(!active)
             .transaction { $0.animation = nil }
