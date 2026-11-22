@@ -1,116 +1,94 @@
 #!/usr/bin/env python3
-"""Compile an isolated old/new SwiftUI header probe; optionally run on a supplied simulator."""
+"""Compile the production continuous header; optionally exercise it on an iOS simulator."""
 from pathlib import Path
 import argparse
 import os
 import platform
 import plistlib
-import re
 import subprocess
 import tempfile
 
 
-def run(out: Path, baseline: str, device: str | None) -> None:
-    root = Path(__file__).resolve().parents[1]
-    before = subprocess.check_output(['git', 'show', f'{baseline}:V2EX/Features/Home/HomeView.swift'], text=True, cwd=root)
-    after = (root / 'V2EX/Features/Home/HomeView.swift').read_text()
-    old_header = before[before.index('    private var feedFilterBar:'):before.index('    @ViewBuilder\n    private func feedPage')]
-    old_start = 'private struct HomeNodeBar:' if 'private struct HomeNodeBar:' in before else 'private struct HomeNodeRailIdentity:'
-    old_layout = before[before.index(old_start):before.index('// MARK: - Community pulse')]
-    for name in ['HomeNodeBar', 'HomeNodeFlowLayout', 'HomeNodeRailIdentity']:
-        old_header = old_header.replace(name, f'Old{name}')
-        old_layout = old_layout.replace(name, f'Old{name}')
-    old_header = old_header.replace('withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { nodeBarHeight = height }', 'Metrics.heightWrites += 1\n                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { nodeBarHeight = height }')
-    new_header = after[after.index('private struct HomeNodeBar:'):after.index('// MARK: - Community pulse')]
-    layout = (root / 'V2EX/Features/Home/HomeNodeLayout.swift').read_text()
-    layout = layout.replace('        let sizes = sizes.map', '        Metrics.arrangements += 1\n        let sizes = sizes.map', 1)
-    count_map = 'subviews.map { Metrics.measurements += 1; return $0.sizeThatFits(.unspecified) }'
-    old_layout = old_layout.replace('subviews.map { $0.sizeThatFits(.unspecified) }', count_map)
-    new_header = new_header.replace('subviews.map { $0.sizeThatFits(.unspecified) }', count_map)
-    old_layout = old_layout.replace('proxy.scrollTo(', 'Metrics.scrollRequests += 1; proxy.scrollTo(')
-    new_header = new_header.replace('proxy.scrollTo(', 'Metrics.scrollRequests += 1; proxy.scrollTo(')
-    common = '''import SwiftUI
+PROBE = r'''import SwiftUI
 import UIKit
 
+struct HomeFeed: Hashable { let title: String }
+enum Theme {
+    static let canvas = Color.white
+    enum Metric { static let screenPadding: CGFloat = 16 }
+}
 enum Metrics {
     static var arrangements = 0
     static var measurements = 0
+    static var placements = 0
     static var parentBodies = 0
-    static var heightWrites = 0
-    static weak var window: UIWindow?
-    static var height: CGFloat = 0
-    static var intermediateFrames = 0
     static var scrollRequests = 0
-    static var contentWidthChanges = 0
-    static var offsetJumps = 0
-    static var scrolls: [ObjectIdentifier: (width: CGFloat, offset: CGFloat)] = [:]
+    static weak var window: UIWindow?
+    static weak var page: PageUIView?
     static func reset() -> Void {
-        arrangements = 0; measurements = 0; parentBodies = 0; heightWrites = 0; intermediateFrames = 0
-        scrollRequests = 0; contentWidthChanges = 0; offsetJumps = 0
+        arrangements = 0; measurements = 0; placements = 0; parentBodies = 0; scrollRequests = 0
     }
-    static func selectedVisibility(in view: UIView) -> [Bool] {
-        var results: [Bool] = []
-        if view is SelectedChipUIView {
-            var ancestor = view.superview
-            while let current = ancestor, !(current is UIScrollView) { ancestor = current.superview }
-            if let scroll = ancestor as? UIScrollView {
-                let frame = view.convert(view.bounds, to: scroll)
-                results.append(frame.width > 0 && scroll.bounds.intersection(frame).width >= frame.width - 1)
-            }
+    static func descendants<T: UIView>(_ root: UIView, of type: T.Type) -> [T] {
+        ((root as? T).map { [$0] } ?? []) + root.subviews.flatMap { descendants($0, of: type) }
+    }
+    static func scrollViews() -> [UIScrollView] {
+        guard let window else { preconditionFailure("Missing window") }
+        return descendants(window, of: UIScrollView.self)
+    }
+    static func topicScroll() -> UIScrollView {
+        guard let scroll = scrollViews().first(where: { $0.contentSize.height > 1000 }) else {
+            preconditionFailure("Missing topic scroll view")
         }
-        return results + view.subviews.flatMap { selectedVisibility(in: $0) }
+        return scroll
     }
-    static func checkSelectedRails() -> Void {
-        guard let window else { preconditionFailure("Missing probe window") }
-        let visible = selectedVisibility(in: window)
-        precondition(visible == [true, true], "Both rails must update and reveal the selected chip: \\(visible)")
+    static func top() -> CGFloat {
+        guard let page, let window else { preconditionFailure("Missing page") }
+        return page.convert(page.bounds, to: window).minY
     }
-    static func sampleScrolls(_ view: UIView) -> Void {
-        if let scroll = view as? UIScrollView, scroll.contentSize.width > scroll.bounds.width + 1,
-           scroll.contentSize.height < 200 {
-            let id = ObjectIdentifier(scroll)
-            if let previous = scrolls[id] {
-                if abs(previous.width - scroll.contentSize.width) > 1 { contentWidthChanges += 1 }
-                if abs(previous.offset - scroll.contentOffset.x) > 40 { offsetJumps += 1 }
-            }
-            scrolls[id] = (scroll.contentSize.width, scroll.contentOffset.x)
-        }
-        view.subviews.forEach { sampleScrolls($0) }
-    }
-}
-final class ProbeUIView: UIView {
-    private var displayLink: CADisplayLink?
-    override func didMoveToWindow() -> Void {
-        displayLink?.invalidate()
-        displayLink = nil
-        if window != nil {
-            Metrics.window = window
-            let link = CADisplayLink(target: self, selector: #selector(sample))
-            link.add(to: .main, forMode: .common)
-            displayLink = link
+    static func checkSelected() -> Void {
+        guard let window else { preconditionFailure("Missing window") }
+        let markers = descendants(window, of: SelectedUIView.self)
+        precondition(markers.count == 2, "Both rails must update selection")
+        for marker in markers {
+            var ancestor = marker.superview
+            while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
+            guard let scroll = ancestor as? UIScrollView else { preconditionFailure("Missing rail") }
+            let rect = marker.convert(marker.bounds, to: scroll)
+            precondition(scroll.bounds.intersection(rect).width >= rect.width - 1, "Selection must be fully visible")
         }
     }
-    @objc private func sample() -> Void {
-        if let window { Metrics.sampleScrolls(window) }
-        let height = layer.presentation()?.bounds.height ?? bounds.height
-        if height > 40.5 && height < 115.5 { Metrics.intermediateFrames += 1 }
+    static func checkRailHit(expanded: Bool) -> Void {
+        guard let window else { preconditionFailure("Missing window") }
+        let rails = scrollViews().filter { $0.contentSize.width > $0.bounds.width + 1 && $0.contentSize.height < 200 }
+        guard let rail = rails.first(where: { ($0.bounds.height > 60) == expanded }) else { preconditionFailure("Missing active rail") }
+        let point = rail.convert(CGPoint(x: rail.bounds.midX, y: rail.bounds.minY + 18), to: window)
+        guard let hit = window.hitTest(point, with: nil) else { preconditionFailure("Missing rail hit") }
+        precondition(hit === rail || hit.isDescendant(of: rail), "Inactive layer must not swallow active rail gestures")
+    }
+    static func checkTopicHit() -> Void {
+        guard let window else { preconditionFailure("Missing window") }
+        let scroll = topicScroll()
+        let point = scroll.convert(CGPoint(x: 30, y: scroll.bounds.minY + 180), to: window)
+        guard let hit = window.hitTest(point, with: nil) else { preconditionFailure("Missing topic hit") }
+        precondition(hit === scroll || hit.isDescendant(of: scroll), "Overlay must not swallow topic gestures")
     }
 }
-struct FrameProbe: UIViewRepresentable {
-    func makeUIView(context: Context) -> ProbeUIView { ProbeUIView() }
-    func updateUIView(_ view: ProbeUIView, context: Context) -> Void {}
+final class PageUIView: UIView {
+    override func didMoveToWindow() -> Void { Metrics.page = self; Metrics.window = window }
 }
-struct HomeFeed: Hashable {
-    let title: String
-    static let all = HomeFeed(title: "问与答")
+struct PageProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> PageUIView { let view = PageUIView(); view.isUserInteractionEnabled = false; return view }
+    func updateUIView(_ view: PageUIView, context: Context) -> Void {}
 }
-@MainActor final class HomeViewModel: ObservableObject { @Published var feed = HomeFeed.all }
-enum Theme { enum Metric { static let screenPadding: CGFloat = 16 } }
-extension View { func readableColumn() -> some View { self } }
-final class SelectedChipUIView: UIView {}
-struct SelectedChipProbe: UIViewRepresentable {
-    func makeUIView(context: Context) -> SelectedChipUIView { SelectedChipUIView() }
-    func updateUIView(_ view: SelectedChipUIView, context: Context) -> Void {}
+final class LastRowUIView: UIView {}
+struct LastRowProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> LastRowUIView { let view = LastRowUIView(); view.isUserInteractionEnabled = false; return view }
+    func updateUIView(_ view: LastRowUIView, context: Context) -> Void {}
+}
+final class SelectedUIView: UIView {}
+struct SelectedProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> SelectedUIView { let view = SelectedUIView(); view.isUserInteractionEnabled = false; return view }
+    func updateUIView(_ view: SelectedUIView, context: Context) -> Void {}
 }
 struct FilterChip: View {
     let title: String
@@ -122,70 +100,136 @@ struct FilterChip: View {
             Text(title).font(.system(size: 14, weight: isSelected ? .semibold : .medium))
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .background(.regularMaterial, in: Capsule()).frame(minHeight: minimumHeight)
-        }.buttonStyle(.plain)
-            .background { if isSelected { SelectedChipProbe() } }
+        }.buttonStyle(.plain).background { if isSelected { SelectedProbe() } }
     }
 }
 struct Probe: View {
-    @StateObject private var model = HomeViewModel()
-    @State private var editingTabs = false
-    @State private var nodeBarHeight: CGFloat = 112
-    @State private var nodesCollapsed = false
-    @Environment(\\.accessibilityReduceMotion) private var reduceMotion
+    @State private var state = HomeNodeScrollState()
+    @State private var selected = HomeFeed(title: "问与答")
+    @State private var width: CGFloat = 390
     @State private var feeds = ["全部", "最热", "R2", "分享创造", "分享发现", "问与答", "二手交易", "程序员", "Apple", "关注", "很长的节点名称保持完整", "职场话题", "Android", "硬件", "设计"].map { HomeFeed(title: $0) }
-    private let old = CommandLine.arguments.contains("before")
     var body: some View {
         Metrics.parentBodies += 1
-        return ScrollView { LazyVStack { ForEach(0..<100) { Text("Topic \\($0)").frame(height: 60) } } }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Group {
-                    if old { feedFilterBar }
-                    else { HomeNodeBar(feeds: feeds, selected: $model.feed, collapsed: nodesCollapsed) { editingTabs = true } }
-                }
-                .background(FrameProbe())
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { Metrics.height = $0 }
-            }
-            .task {
-                try? await Task.sleep(for: .seconds(1))
-                print("PROBE initial height=\\(Metrics.height)")
-                Metrics.reset()
-                for _ in 0..<10 {
-                    withAnimation(.easeInOut(duration: 0.22)) { nodesCollapsed.toggle() }
-                    try? await Task.sleep(for: .milliseconds(400))
-                    print("PROBE collapsed=\\(nodesCollapsed) height=\\(Metrics.height)")
-                }
-                print("PROBE result before=\\(old) arrangements=\\(Metrics.arrangements) measurements=\\(Metrics.measurements) parentBodies=\\(Metrics.parentBodies) heightWrites=\\(Metrics.heightWrites) intermediateFrames=\\(Metrics.intermediateFrames)")
-                print("PROBE scrollRequests=\\(Metrics.scrollRequests) contentWidthChanges=\\(Metrics.contentWidthChanges) offsetJumps=\\(Metrics.offsetJumps)")
-                if !old {
-                    Metrics.reset()
-                    model.feed = HomeFeed(title: "设计")
-                    try? await Task.sleep(for: .milliseconds(400))
-                    precondition(Metrics.scrollRequests == 2, "Selection must reposition both rails")
-                    Metrics.checkSelectedRails()
-                    Metrics.reset()
-                    feeds.reverse()
-                    try? await Task.sleep(for: .milliseconds(400))
-                    precondition(Metrics.scrollRequests == 2, "Configuration must reposition both rails")
-                    Metrics.checkSelectedRails()
-                    Metrics.reset()
-                    for _ in 0..<6 {
-                        withAnimation(.easeInOut(duration: 0.22)) { nodesCollapsed.toggle() }
-                        try? await Task.sleep(for: .milliseconds(80))
-                    }
-                    try? await Task.sleep(for: .milliseconds(400))
-                    precondition(abs(Metrics.height - 116) < 0.5, "Interrupted transitions must settle expanded")
-                    precondition(Metrics.intermediateFrames > 0, "Interrupted transitions must remain animated")
-                    precondition(Metrics.scrollRequests == 0 && Metrics.contentWidthChanges == 0 && Metrics.offsetJumps == 0,
-                                 "Reversing a transition must not disturb either scroll view")
-                    Metrics.checkSelectedRails()
-                    print("PROBE interaction selection/reorder/reversal passed")
-                }
-                fflush(stdout)
-                exit(0)
-            }
+        return HomeNodeScrollContainer(feeds: feeds, selected: $selected, state: state, content: topics) {}
+            .frame(width: width, height: 700)
+            .task { await exercise() }
     }
-'''
-    entry = '''
+    private var topics: some View {
+        TabView {
+            ScrollView {
+                LazyVStack {
+                    ForEach(0..<100) { Text("Topic \($0)").frame(height: 60) }
+                    Text("Last topic").frame(height: 60).background(LastRowProbe())
+                }
+            }
+            .onScrollGeometryChange(for: HomeNodeScrollSample.self) { geometry in
+                HomeNodeScrollSample(offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                                     topInset: geometry.contentInsets.top, viewportHeight: geometry.containerSize.height)
+            } action: { _, sample in state.receive(sample) }
+            .onScrollPhaseChange { _, phase, context in
+                let geometry = context.geometry
+                state.receive(HomeNodeScrollSample(offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                                                   topInset: geometry.contentInsets.top,
+                                                   viewportHeight: geometry.containerSize.height))
+                if phase == .idle { state.settle(reduceMotion: false) }
+                else { state.interrupt() }
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .background(PageProbe())
+    }
+    @MainActor private func pause(_ milliseconds: Int = 50) async -> Void {
+        try? await Task.sleep(for: .milliseconds(milliseconds))
+    }
+    @MainActor private func exercise() async -> Void {
+        await pause(700)
+        let scroll = Metrics.topicScroll()
+        let size = scroll.bounds.size
+        let inset = scroll.adjustedContentInset
+        let expandedTop = Metrics.top()
+        let rails = Metrics.scrollViews().filter { $0.contentSize.width > $0.bounds.width + 1 && $0.contentSize.height < 200 }
+        precondition(rails.count == 2, "Both rails must be prelaid out")
+        let railSizes = rails.map(\.contentSize)
+        let railOffsets = rails.map(\.contentOffset)
+        Metrics.checkRailHit(expanded: true)
+        Metrics.reset()
+        for offset in stride(from: 4, through: 160, by: 4) {
+            scroll.setContentOffset(CGPoint(x: 0, y: CGFloat(offset) - inset.top), animated: false)
+            await pause(20)
+            precondition(abs(state.progress - CGFloat(offset) / 160) < 0.001, "Progress must track scroll distance")
+            precondition(abs(Metrics.top() - (expandedTop - 76 * state.progress)) < 0.6, "Page must translate, not resize")
+            precondition(scroll.bounds.size == size && scroll.adjustedContentInset == inset,
+                         "Viewport/insets must be fixed: size=\(size)/\(scroll.bounds.size) inset=\(inset)/\(scroll.adjustedContentInset) offset=\(offset)")
+        }
+        for offset in stride(from: 156, through: 0, by: -4) {
+            scroll.setContentOffset(CGPoint(x: 0, y: CGFloat(offset) - inset.top), animated: false)
+            await pause(20)
+            precondition(abs(state.progress - CGFloat(offset) / 160) < 0.001, "Reverse scroll must immediately expand")
+        }
+        scroll.setContentOffset(CGPoint(x: 0, y: 64 - inset.top), animated: false)
+        await pause(80)
+        let held = Metrics.top()
+        await pause(150)
+        precondition(abs(Metrics.top() - held) < 0.1 && abs(state.progress - 0.4) < 0.001, "No independent drag animation")
+        state.settle(reduceMotion: false)
+        await pause(40)
+        precondition(state.progress > 0 && state.progress < 0.4, "Snap needs intermediate frames")
+        state.interrupt()
+        let interrupted = state.progress
+        await pause(160)
+        precondition(state.progress == interrupted, "Touch must cancel the snap at its current position")
+        state.settle(reduceMotion: false)
+        await pause(180)
+        precondition(state.progress == 0, "Lower-half snap must expand")
+        scroll.setContentOffset(CGPoint(x: 0, y: 184 - inset.top), animated: false)
+        await pause(80)
+        state.settle(reduceMotion: false)
+        await pause(180)
+        precondition(state.progress == 1, "Upper-half snap must collapse")
+        Metrics.checkRailHit(expanded: false)
+        precondition(rails.map(\.contentSize) == railSizes && rails.map(\.contentOffset) == railOffsets,
+                     "Scroll progress must not resize or reposition either rail")
+        precondition(scroll.bounds.size == size && scroll.adjustedContentInset == inset, "Snap must not resize the viewport")
+        Metrics.checkTopicHit()
+        print("PROBE drag/snap arrangements=\(Metrics.arrangements) measurements=\(Metrics.measurements) placements=\(Metrics.placements) parentBodies=\(Metrics.parentBodies) scrollRequests=\(Metrics.scrollRequests)")
+        precondition(Metrics.arrangements == 0 && Metrics.measurements == 0 && Metrics.placements == 0,
+                     "Scroll/snap must not remeasure or reflow chips")
+        precondition(Metrics.parentBodies == 0 && Metrics.scrollRequests == 0, "Progress must stay out of parent/selection updates")
+        scroll.setContentOffset(CGPoint(x: 0, y: scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom), animated: false)
+        await pause(150)
+        // Exercise the worst case: a fully expanded header at the list's bottom limit.
+        state.receive(HomeNodeScrollSample(offset: 0, topInset: inset.top, viewportHeight: size.height))
+        await pause(80)
+        precondition(state.progress < 0.001, "Bottom reachability check needs expanded presentation: \(state.progress), height=\(size.height)/\(scroll.bounds.height)")
+        guard let window = Metrics.window, let last = Metrics.descendants(window, of: LastRowUIView.self).first else {
+            preconditionFailure("Last row must be materialized")
+        }
+        precondition(last.convert(last.bounds, to: window).maxY <= expandedTop - 116 + 700.5,
+                     "Expanded fixed viewport must not hide the final row")
+        selected = HomeFeed(title: "设计")
+        await pause(250)
+        Metrics.checkSelected()
+        feeds.reverse()
+        await pause(250)
+        Metrics.checkSelected()
+        width = 360
+        await pause(250)
+        Metrics.checkSelected()
+        scroll.setContentOffset(CGPoint(x: 0, y: -inset.top), animated: false)
+        await pause(100)
+        precondition(state.progress == 0, "Top must fully expand")
+        Metrics.checkTopicHit()
+        feeds = [selected]
+        await pause(250)
+        let sparseTop = Metrics.top()
+        scroll.setContentOffset(CGPoint(x: 0, y: 160 - inset.top), animated: false)
+        await pause(100)
+        precondition(abs(Metrics.top() - sparseTop) < 0.5, "One-row configuration must not reserve phantom rows")
+        print("PROBE PASS: continuous/reverse/hold/snap/interruption/top/selection/reorder/resize/sparse/hit-testing/bottom")
+        fflush(stdout)
+        exit(0)
+    }
+}
 @main final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -197,9 +241,23 @@ struct Probe: View {
     }
 }
 '''
-    (out / 'Probe.swift').write_text(common + old_header + '}\n' + old_layout + new_header + layout + entry)
+
+
+def run(out: Path, device: str | None) -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / 'V2EX/Features/Home/HomeView.swift').read_text()
+    header = source[source.index('private struct HomeNodeScrollContainer'):source.index('// MARK: - Community pulse')]
+    assert '.onGeometryChange' not in header, 'No geometry-to-state feedback is allowed in the header'
+    assert 'withAnimation' not in header and 'HomeNodeTransitionLayout' not in header
+    layout = (root / 'V2EX/Features/Home/HomeNodeLayout.swift').read_text()
+    layout = layout.replace('        let sizes = sizes.map', '        Metrics.arrangements += 1\n        let sizes = sizes.map', 1)
+    header = header.replace('subviews.map { $0.sizeThatFits(.unspecified) }',
+                            'subviews.map { Metrics.measurements += 1; return $0.sizeThatFits(.unspecified) }')
+    header = header.replace('proxy.scrollTo(', 'Metrics.scrollRequests += 1; proxy.scrollTo(')
+    header = header.replace('        let layout = cache.layout', '        Metrics.placements += 1\n        let layout = cache.layout')
+    (out / 'Probe.swift').write_text(PROBE + header + layout)
     app = out / 'NodeProbe.app'
-    app.mkdir(exist_ok=True)
+    app.mkdir()
     (app / 'Info.plist').write_bytes(plistlib.dumps({
         'CFBundleIdentifier': 'local.tests.node-performance', 'CFBundleExecutable': 'NodeProbe',
         'CFBundleName': 'NodeProbe', 'CFBundleVersion': '1', 'CFBundleShortVersionString': '1.0',
@@ -210,53 +268,31 @@ struct Probe: View {
     subprocess.run([
         'xcrun', 'swiftc', '-parse-as-library', '-sdk', sdk,
         '-target', f'{platform.machine()}-apple-ios18.0-simulator',
-        '-module-cache-path', str(out / 'module-cache'), str(out / 'Probe.swift'),
-        '-o', str(app / 'NodeProbe'),
+        '-module-cache-path', str(out / 'module-cache'), str(out / 'Probe.swift'), '-o', str(app / 'NodeProbe'),
     ], check=True)
     if not device:
-        print('PASS: extracted old/new header expressions compile (no simulator execution requested)')
+        print('PASS: production continuous header compiles (simulator execution not requested)')
         return
     subprocess.run(['xcrun', 'simctl', 'install', device, str(app)], check=True)
     try:
-        results: list[tuple[int, ...]] = []
-        heights: list[list[str]] = []
-        scroll_results: list[tuple[int, ...]] = []
-        for variant in ['before', 'after']:
-            output = subprocess.check_output([
-                'xcrun', 'simctl', 'launch', '--console', device, 'local.tests.node-performance', variant,
-            ], text=True, stderr=subprocess.STDOUT, timeout=90)
-            print('\n'.join(line for line in output.splitlines() if line.startswith('PROBE')))
-            match = re.search(r'arrangements=(\d+) measurements=(\d+) parentBodies=(\d+) heightWrites=(\d+) intermediateFrames=(\d+)', output)
-            if match is None:
-                raise RuntimeError(f'{variant} probe did not finish: {output}')
-            results.append(tuple(int(value) for value in match.groups()))
-            heights.append(re.findall(r'PROBE collapsed=\w+ height=([\d.]+)', output))
-            scroll_match = re.search(r'scrollRequests=(\d+) contentWidthChanges=(\d+) offsetJumps=(\d+)', output)
-            if scroll_match is None:
-                raise RuntimeError('Missing scroll-transition metrics')
-            scroll_results.append(tuple(int(value) for value in scroll_match.groups()))
-            if variant == 'after':
-                assert 'PROBE interaction selection/reorder/reversal passed' in output, output
-        assert len(heights[0]) == 10 and heights[0] == heights[1], heights
-        assert scroll_results[1] == (0, 0, 0), scroll_results
-        assert results[1][0] <= results[0][0] and results[1][1] <= results[0][1], results
-        assert results[1][2] <= results[0][2] and results[1][3] == 0, results
-        assert results[1][4] > 0, 'Optimization must retain animated intermediate heights'
-        print('PASS: same endpoint heights, animated intermediate frames, stable scroll geometry, '
-              'no transition scroll requests, bounded layout work, selection/reorder/reversal checks')
+        result = subprocess.run([
+            'xcrun', 'simctl', 'launch', '--console', device, 'local.tests.node-performance',
+        ], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=90)
+        print(result.stdout)
+        result.check_returncode()
+        assert 'PROBE PASS:' in result.stdout, 'Simulator probe did not complete'
     finally:
         subprocess.run(['xcrun', 'simctl', 'uninstall', device, 'local.tests.node-performance'], check=False)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline', default='bf70b9e', help='Pre-transition-fix commit')
     parser.add_argument('--device', help='Booted disposable iOS 18+ simulator UUID; omit to compile only')
     args = parser.parse_args()
     job = os.environ.get('CLAUDE_JOB_DIR')
     scratch = str(Path(job) / 'tmp') if job else None
     with tempfile.TemporaryDirectory(prefix='home-node-probe-', dir=scratch) as directory:
-        run(Path(directory), args.baseline, args.device)
+        run(Path(directory), args.device)
 
 
 if __name__ == '__main__':
