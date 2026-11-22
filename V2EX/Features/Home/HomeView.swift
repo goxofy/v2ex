@@ -348,8 +348,15 @@ private struct HomeNodeRailVisibility: ViewModifier {
 
     func body(content: Content) -> some View {
         let active = expanded ? state.progress < 0.5 : state.progress >= 0.5
+        let opacity = expanded ? 1 - state.progress : state.progress
         content
-            .opacity(expanded ? 1 - state.progress : state.progress)
+            // Opacity alone leaves the inactive rail's glass at the same location.
+            // Move it outside the clip at endpoints without unmounting or changing layout.
+            .visualEffect { effect, geometry in
+                effect.offset(y: opacity == 0 ? -geometry.size.height : 0)
+            }
+            .clipped()
+            .opacity(opacity)
             .allowsHitTesting(active)
             .accessibilityHidden(!active)
             .transaction { $0.animation = nil }
