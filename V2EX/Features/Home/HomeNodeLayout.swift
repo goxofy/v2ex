@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Packs natural chip sizes in configuration order: left to right, then down.
 /// If three rows do not fit the viewport, widen the scrollable canvas, never a chip.
@@ -84,26 +85,87 @@ struct HomeNodeLayoutCache {
     }
 }
 
-/// Only the outer viewport changes height; both rails keep their full-size content.
-struct HomeNodeTransition {
-    let progress: CGFloat
-
-    func height(expanded: CGFloat, collapsed: CGFloat) -> CGFloat {
-        let fraction = progress.isFinite ? min(1, max(0, progress)) : 0
-        return expanded + (collapsed - expanded) * fraction
-    }
-}
-
 struct HomeNodeScrollSample: Equatable {
     let offset: CGFloat
     let topInset: CGFloat
     let viewportHeight: CGFloat
+}
 
-    func collapsed(after previous: Self, wasCollapsed: Bool) -> Bool {
-        // Header animation changes the safe area/viewport, not the user's scroll.
-        guard topInset == previous.topInset, viewportHeight == previous.viewportHeight,
-              offset.isFinite else { return wasCollapsed }
-        // The hysteresis gap exceeds the height released by two compact rows.
-        return wasCollapsed ? offset > 8 : offset > 120
+/// A feed's presentation state, observed only by transform/opacity modifiers.
+@MainActor @Observable
+final class HomeNodeScrollState {
+    static let travel: CGFloat = 160
+    static let snapDuration: TimeInterval = 0.12
+    private(set) var progress: CGFloat = 0
+    @ObservationIgnored private var previous: HomeNodeScrollSample?
+    @ObservationIgnored private var snapTask: Task<Void, Never>?
+
+    var snapTarget: CGFloat { progress < 0.5 ? 0 : 1 }
+
+    func receive(_ sample: HomeNodeScrollSample) -> Void {
+        guard sample.offset.isFinite, sample.topInset.isFinite,
+              sample.viewportHeight.isFinite, sample.viewportHeight > 0 else { return }
+        let old = previous
+        previous = sample
+        if sample.offset <= 0 {
+            interrupt()
+            progress = 0
+            return
+        }
+        // Rotation/inset changes rebase the scroll origin, never move the header.
+        guard let old, old.topInset == sample.topInset,
+              old.viewportHeight == sample.viewportHeight else { return }
+        let delta = sample.offset - max(0, old.offset)
+        guard delta != 0 else { return }
+        interrupt()
+        // Clamp at either end so reverse scrolling reveals the header immediately,
+        // even far down a feed. A snap never changes the list's content offset.
+        progress = min(1, max(0, progress + delta / Self.travel))
+    }
+
+    func interrupt() -> Void {
+        snapTask?.cancel()
+        snapTask = nil
+    }
+
+    func settle(reduceMotion: Bool) -> Void {
+        interrupt()
+        let target = snapTarget
+        guard progress != target else { return }
+        guard !reduceMotion else { progress = target; return }
+        let origin = progress
+        snapTask = Task { @MainActor [weak self] in
+            let clock = ContinuousClock()
+            let start = clock.now
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                let elapsed = start.duration(to: clock.now).components
+                let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+                let fraction = min(1, seconds / Self.snapDuration)
+                let eased = CGFloat(1 - pow(1 - fraction, 3))
+                self.progress = origin + (target - origin) * eased
+                if fraction >= 1 { self.snapTask = nil; return }
+            }
+        }
+    }
+
+    deinit { snapTask?.cancel() }
+}
+
+/// Stable references avoid subscribing HomeView or its topic rows to scroll pixels.
+@MainActor
+final class HomeNodeScrollStates {
+    private var states: [HomeFeed: HomeNodeScrollState] = [:]
+
+    func state(for feed: HomeFeed) -> HomeNodeScrollState {
+        if let state = states[feed] { return state }
+        let state = HomeNodeScrollState()
+        states[feed] = state
+        return state
+    }
+
+    func interruptAll() -> Void {
+        for state in states.values { state.interrupt() }
     }
 }

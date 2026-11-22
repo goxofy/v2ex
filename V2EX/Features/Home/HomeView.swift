@@ -19,8 +19,7 @@ struct HomeView: View {
 
     /// Per-feed scroll offsets, so swiping between categories doesn't lose your place.
     @State private var scrollPositions: [HomeViewModel.Feed: ScrollPosition] = [:]
-    @State private var collapsedNodes: [HomeViewModel.Feed: Bool] = [:]
-    private var nodesCollapsed: Bool { collapsedNodes[model.feed] ?? false }
+    @State private var nodeScroll = HomeNodeScrollStates()
     /// `.task` 会在从话题详情返回时重新启动。记录已经消费过的打开请求，
     /// 避免把用户当前分类重复重置为请求最初携带的「全部」。
     @State private var handledRequestID: UUID?
@@ -32,37 +31,17 @@ struct HomeView: View {
     }
 
     var body: some View {
-        // One page per feed: swipe left/right to change category, the chip rail
-        // above stays in sync through the shared `model.feed` selection.
-        TabView(selection: $model.feed) {
-            ForEach(feeds, id: \.self) { feed in
-                feedPage(feed)
-                    .onScrollGeometryChange(for: HomeNodeScrollSample.self) { geometry in
-                        HomeNodeScrollSample(
-                            offset: geometry.contentOffset.y + geometry.contentInsets.top,
-                            topInset: geometry.contentInsets.top,
-                            viewportHeight: geometry.containerSize.height
-                        )
-                    } action: { previous, current in
-                        guard model.feed == feed else { return }
-                        let collapsed = current.collapsed(after: previous, wasCollapsed: nodesCollapsed)
-                        guard collapsed != nodesCollapsed else { return }
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
-                            collapsedNodes[feed] = collapsed
-                        }
-                    }
-                    .tag(feed)
-            }
+        HomeNodeScrollContainer(feeds: feeds, selected: $model.feed,
+                                state: nodeScroll.state(for: model.feed),
+                                content: feedPages.overlay(alignment: .top) { refreshToast }) {
+            editingTabs = true
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
         // Let the feed scroll under the floating tab bar instead of stopping above it.
         .ignoresSafeArea(edges: .bottom)
         .background(Theme.canvas)
         .navigationTitle("V2EX")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
-        .overlay(alignment: .top) { refreshToast }
-        .topSafeAreaBar(spacing: 0) { feedFilterBar }
         .sheet(isPresented: $editingTabs) {
             HomeTabsEditor(store: tabs, followedNodes: followed.names, hackerNews: settings.hackerNewsEnabled)
         }
@@ -98,6 +77,8 @@ struct HomeView: View {
             }
         }
         .onChange(of: model.feed) { _, newFeed in
+            nodeScroll.interruptAll()
+            nodeScroll.state(for: newFeed).settle(reduceMotion: reduceMotion)
             refreshFeedback = nil
             Task { await model.load(feed: newFeed, session: session) }
         }
@@ -113,8 +94,12 @@ struct HomeView: View {
                 refreshFeedback = feedback
             }
         }
-        .onAppear { isHomeVisible = true }
+        .onAppear {
+            isHomeVisible = true
+            nodeScroll.state(for: model.feed).settle(reduceMotion: reduceMotion)
+        }
         .onDisappear {
+            nodeScroll.interruptAll()
             isHomeVisible = false
             refreshFeedback = nil
         }
@@ -130,10 +115,32 @@ struct HomeView: View {
         }
     }
 
-    private var feedFilterBar: some View {
-        HomeNodeBar(feeds: feeds, selected: $model.feed, collapsed: nodesCollapsed) {
-            editingTabs = true
+    private var feedPages: some View {
+        TabView(selection: $model.feed) {
+            ForEach(feeds, id: \.self) { feed in
+                feedPage(feed)
+                    .onScrollGeometryChange(for: HomeNodeScrollSample.self) { geometry in
+                        HomeNodeScrollSample(offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                                             topInset: geometry.contentInsets.top,
+                                             viewportHeight: geometry.containerSize.height)
+                    } action: { _, current in
+                        guard model.feed == feed else { return }
+                        nodeScroll.state(for: feed).receive(current)
+                    }
+                    .onScrollPhaseChange { _, phase, context in
+                        guard model.feed == feed else { return }
+                        let state = nodeScroll.state(for: feed)
+                        let geometry = context.geometry
+                        state.receive(HomeNodeScrollSample(offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                                                           topInset: geometry.contentInsets.top,
+                                                           viewportHeight: geometry.containerSize.height))
+                        if phase == .idle { state.settle(reduceMotion: reduceMotion) }
+                        else { state.interrupt() }
+                    }
+                    .tag(feed)
+            }
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
     }
 
     @ViewBuilder
@@ -276,33 +283,89 @@ struct HomeView: View {
     }
 }
 
-private struct HomeNodeBar: View {
+private struct HomeNodeScrollContainer<Content: View>: View {
     let feeds: [HomeFeed]
     @Binding var selected: HomeFeed
-    let collapsed: Bool
+    let state: HomeNodeScrollState
+    let content: Content
     let onEdit: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            // Keep both scroll views mounted: changing the content width of the active
-            // scroll view while also scrollTo-ing its selection causes offset jumps.
-            HomeNodeTransitionLayout(progress: collapsed ? 1 : 0) {
-                HomeNodeRail(feeds: feeds, selected: selected, maxRows: 3) { selected = $0 }
-                    .equatable()
-                    .opacity(collapsed ? 0 : 1)
-                    .allowsHitTesting(!collapsed)
-                    .accessibilityHidden(collapsed)
-                HomeNodeRail(feeds: feeds, selected: selected, maxRows: 1) { selected = $0 }
-                    .equatable()
-                    .opacity(collapsed ? 1 : 0)
-                    .allowsHitTesting(collapsed)
-                    .accessibilityHidden(!collapsed)
-            }
-            .clipped()
-            Button(action: onEdit) { Image(systemName: "slider.horizontal.3").padding(10) }
-                .accessibilityLabel("编辑首页标签")
+        GeometryReader { viewport in
+            let width = min(720, viewport.size.width)
+            header(maxRows: 3, width: width)
+                .modifier(HomeNodeRailVisibility(state: state, expanded: true))
+                .overlay(alignment: .top) {
+                    GeometryReader { expanded in
+                        header(maxRows: 1, width: width)
+                            .modifier(HomeNodeRailVisibility(state: state, expanded: false))
+                            .background {
+                                GeometryReader { collapsed in
+                                    // The list always has the collapsed viewport's size.
+                                    // In expanded mode its extra bottom area is clipped by
+                                    // the outer container, not removed by a layout change.
+                                    content
+                                        // Reserve the clipped bottom area once so the final
+                                        // row stays reachable even with an expanded header.
+                                        .contentMargins(.bottom, max(0, expanded.size.height - collapsed.size.height),
+                                                        for: .scrollContent)
+                                        .frame(width: viewport.size.width,
+                                               height: max(0, viewport.size.height - collapsed.size.height))
+                                        .background(Theme.canvas)
+                                        .clipped()
+                                        .modifier(HomeNodePageTranslation(
+                                            state: state, expandedHeight: expanded.size.height,
+                                            collapsedHeight: collapsed.size.height
+                                        ))
+                                }
+                            }
+                    }
+                }
         }
-        .readableColumn()
+        // The opaque list clips the expanded rail at its moving top edge. Neither
+        // rail, the list viewport, nor safe-area insets change size while scrolling.
+        .clipped()
+    }
+
+    private func header(maxRows: Int, width: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 4) {
+            HomeNodeRail(feeds: feeds, selected: selected, maxRows: maxRows,
+                         viewportWidth: max(0, width - 44)) { selected = $0 }
+                .equatable()
+            Button(action: onEdit) {
+                Image(systemName: "slider.horizontal.3").frame(width: 40, height: 40)
+            }
+            .accessibilityLabel("编辑首页标签")
+        }
+        .frame(width: width)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct HomeNodeRailVisibility: ViewModifier {
+    let state: HomeNodeScrollState
+    let expanded: Bool
+
+    func body(content: Content) -> some View {
+        let active = expanded ? state.progress < 0.5 : state.progress >= 0.5
+        content
+            .opacity(expanded ? 1 - state.progress : state.progress)
+            .allowsHitTesting(active)
+            .accessibilityHidden(!active)
+            .transaction { $0.animation = nil }
+    }
+}
+
+private struct HomeNodePageTranslation: ViewModifier {
+    let state: HomeNodeScrollState
+    let expandedHeight: CGFloat
+    let collapsedHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        let translation = expandedHeight - max(0, expandedHeight - collapsedHeight) * state.progress
+        return content
+            .visualEffect { effect, _ in effect.offset(y: translation) }
+            .transaction { $0.animation = nil }
     }
 }
 
@@ -310,13 +373,14 @@ private struct HomeNodeRail: View, Equatable {
     let feeds: [HomeFeed]
     let selected: HomeFeed
     let maxRows: Int
+    let viewportWidth: CGFloat
     let onSelect: (HomeFeed) -> Void
-    @State private var viewportWidth: CGFloat = 0
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         // Collapse is intentionally not an input. The callback only updates the
         // enclosing bar's stable selection binding; value changes still rebuild both rails.
-        lhs.feeds == rhs.feeds && lhs.selected == rhs.selected && lhs.maxRows == rhs.maxRows
+        lhs.feeds == rhs.feeds && lhs.selected == rhs.selected &&
+        lhs.maxRows == rhs.maxRows && lhs.viewportWidth == rhs.viewportWidth
     }
 
     var body: some View {
@@ -340,9 +404,6 @@ private struct HomeNodeRail: View, Equatable {
             }
             // Use intrinsic content height, not a geometry -> @State -> frame feedback loop.
             .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-                viewportWidth = width
-            }
             .accessibilityHint(maxRows == 1 ? "单行节点列表，可左右滑动" : "最多三行节点列表，可左右滑动")
             .task(id: HomeNodeRailIdentity(feed: selected, feeds: feeds, width: viewportWidth)) {
                 await Task.yield()
@@ -357,31 +418,6 @@ private struct HomeNodeRailIdentity: Hashable {
     let feed: HomeFeed
     let feeds: [HomeFeed]
     let width: CGFloat
-}
-
-private struct HomeNodeTransitionLayout: Layout {
-    var progress: CGFloat
-
-    var animatableData: CGFloat {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) }
-        let expanded = sizes.first ?? .zero
-        let collapsed = sizes.last ?? expanded
-        return CGSize(width: max(expanded.width, collapsed.width),
-                      height: HomeNodeTransition(progress: progress).height(expanded: expanded.height, collapsed: collapsed.height))
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> Void {
-        for subview in subviews {
-            // Never propose the animated viewport height to either rail's scroll view.
-            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
-            subview.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(size))
-        }
-    }
 }
 
 private struct HomeNodeFlowLayout: Layout {

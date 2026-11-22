@@ -95,75 +95,137 @@ final class HomeTabsTests: XCTestCase {
         XCTAssertEqual(second.layout(viewportWidth: 320, maxRows: 3).frames.map(\.size), sizes)
     }
 
-    func testTransitionPreservesEndpointsAndInterpolatesHeight() -> Void {
-        XCTAssertEqual(HomeNodeTransition(progress: 0).height(expanded: 116, collapsed: 40), 116)
-        XCTAssertEqual(HomeNodeTransition(progress: 1).height(expanded: 116, collapsed: 40), 40)
-        XCTAssertEqual(HomeNodeTransition(progress: 0.5).height(expanded: 116, collapsed: 40), 78)
-        for step in 0...100 {
-            let progress = CGFloat(step) / 100
-            XCTAssertEqual(HomeNodeTransition(progress: progress).height(expanded: 40, collapsed: 40), 40)
+    private func sample(_ offset: CGFloat, inset: CGFloat = 0, height: CGFloat = 600) -> HomeNodeScrollSample {
+        HomeNodeScrollSample(offset: offset, topInset: inset, viewportHeight: height)
+    }
+
+    func testProgressTracksEveryPixelWithoutAThreshold() -> Void {
+        let state = HomeNodeScrollState()
+        state.receive(sample(0))
+        for offset in 1...160 {
+            state.receive(sample(CGFloat(offset)))
+            XCTAssertEqual(state.progress, CGFloat(offset) / 160, accuracy: 0.000001)
+        }
+        for offset in (0..<160).reversed() {
+            state.receive(sample(CGFloat(offset)))
+            XCTAssertEqual(state.progress, CGFloat(offset) / 160, accuracy: 0.000001)
         }
     }
 
-    func testTransitionClampsInvalidProgress() -> Void {
-        for progress: CGFloat in [-1, -.infinity, .infinity, .nan] {
-            XCTAssertEqual(HomeNodeTransition(progress: progress).height(expanded: 116, collapsed: 40), 116)
-        }
-        XCTAssertEqual(HomeNodeTransition(progress: 2).height(expanded: 116, collapsed: 40), 40)
+    func testReverseScrollRevealsHeaderFarDownTheFeed() -> Void {
+        let state = HomeNodeScrollState()
+        state.receive(sample(0))
+        state.receive(sample(2000))
+        XCTAssertEqual(state.progress, 1)
+        state.receive(sample(1960))
+        XCTAssertEqual(state.progress, 0.75)
+        state.receive(sample(1840))
+        XCTAssertEqual(state.progress, 0)
+        state.receive(sample(1856))
+        XCTAssertEqual(state.progress, 0.1, accuracy: 0.000001)
     }
 
-    func testTransitionCanReverseWithoutChangingRailGeometry() -> Void {
-        let sizes = (0..<15).map { CGSize(width: 50 + $0 * 13, height: 36) }
-        var expandedCache = HomeNodeLayoutCache(sizes: sizes)
-        var collapsedCache = HomeNodeLayoutCache(sizes: sizes)
-        let expanded = expandedCache.layout(viewportWidth: 320, maxRows: 3)
-        let collapsed = collapsedCache.layout(viewportWidth: 320, maxRows: 1)
-        let steps = Array(0...60) + Array((0...60).reversed())
-        var previous = expanded.size.height
-        for step in steps {
-            let height = HomeNodeTransition(progress: CGFloat(step) / 100)
-                .height(expanded: expanded.size.height, collapsed: collapsed.size.height)
-            XCTAssertLessThanOrEqual(abs(height - previous), 0.761)
-            XCTAssertTrue(expandedCache.layout(viewportWidth: 320, maxRows: 3) === expanded)
-            XCTAssertTrue(collapsedCache.layout(viewportWidth: 320, maxRows: 1) === collapsed)
-            previous = height
-        }
-        XCTAssertEqual(previous, expanded.size.height)
+    func testTopAndPullOverscrollFullyExpandWithoutPrematureCollapse() -> Void {
+        let state = HomeNodeScrollState()
+        state.receive(sample(0))
+        state.receive(sample(160))
+        state.receive(sample(-60))
+        XCTAssertEqual(state.progress, 0)
+        state.receive(sample(-20))
+        XCTAssertEqual(state.progress, 0)
+        state.receive(sample(8))
+        XCTAssertEqual(state.progress, 0.05, accuracy: 0.000001)
+        state.receive(sample(0))
+        XCTAssertEqual(state.progress, 0)
     }
 
-    func testCollapseUsesSeparateScrollThresholds() -> Void {
-        let previous = HomeNodeScrollSample(offset: 0, topInset: 112, viewportHeight: 600)
-        for (offset, collapsed, expected): (CGFloat, Bool, Bool) in [
-            (120, false, false), (121, false, true), (50, true, true),
-            (45, true, true), (84, false, false),
-            (9, true, true), (8, true, false), (-30, true, false)
-        ] {
-            let sample = HomeNodeScrollSample(offset: offset, topInset: 112, viewportHeight: 600)
-            XCTAssertEqual(sample.collapsed(after: previous, wasCollapsed: collapsed), expected)
+    func testResizeRebasesWithoutDrivingProgressAndInvalidSamplesAreIgnored() -> Void {
+        let state = HomeNodeScrollState()
+        state.receive(sample(0))
+        state.receive(sample(80))
+        state.receive(sample(300, inset: 20, height: 500))
+        XCTAssertEqual(state.progress, 0.5)
+        for bad: CGFloat in [.nan, .infinity, -.infinity] {
+            state.receive(sample(bad))
+            state.receive(sample(999, inset: bad))
+            state.receive(sample(999, height: bad))
+        }
+        state.receive(sample(999, height: 0))
+        XCTAssertEqual(state.progress, 0.5)
+        state.receive(sample(316, inset: 20, height: 500))
+        XCTAssertEqual(state.progress, 0.6, accuracy: 0.000001)
+    }
+
+    func testNoProgressContinuesWhileFingerHoldsStill() async throws -> Void {
+        let state = HomeNodeScrollState()
+        state.receive(sample(0))
+        state.receive(sample(64))
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertEqual(state.progress, 0.4, accuracy: 0.000001)
+        state.receive(sample(64))
+        XCTAssertEqual(state.progress, 0.4, accuracy: 0.000001)
+    }
+
+    func testIdleSnapUsesNearestEndpointAndReduceMotion() -> Void {
+        for (offset, expected): (CGFloat, CGFloat) in [(79, 0), (80, 1), (120, 1)] {
+            let state = HomeNodeScrollState()
+            state.receive(sample(0))
+            state.receive(sample(offset))
+            XCTAssertEqual(state.snapTarget, expected)
+            state.settle(reduceMotion: true)
+            XCTAssertEqual(state.progress, expected)
+            // A snap does not change the offset origin: the next pixel remains one pixel.
+            state.receive(sample(offset + (expected == 0 ? 1 : -1)))
+            XCTAssertEqual(state.progress, expected == 0 ? 1 / 160 : 159 / 160, accuracy: 0.000001)
         }
     }
 
-    func testPixelScrollOnlyChangesCollapseStateAtThresholds() -> Void {
-        var previous = HomeNodeScrollSample(offset: 0, topInset: 112, viewportHeight: 600)
-        var collapsed = false
-        var writes = 0
-        for offset in Array(0...1000) + Array((0...1000).reversed()) {
-            let sample = HomeNodeScrollSample(offset: CGFloat(offset), topInset: 112, viewportHeight: 600)
-            let next = sample.collapsed(after: previous, wasCollapsed: collapsed)
-            if next != collapsed { writes += 1; collapsed = next }
-            previous = sample
-        }
-        XCTAssertEqual(writes, 2)
-        XCTAssertFalse(collapsed)
+    func testIdleSnapCompletesAndCanBeInterruptedAtItsCurrentProgress() async throws -> Void {
+        let state = HomeNodeScrollState()
+        state.receive(sample(0))
+        state.receive(sample(64))
+        state.settle(reduceMotion: false)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertLessThan(state.progress, 0.4)
+        XCTAssertGreaterThan(state.progress, 0)
+        state.interrupt()
+        let interrupted = state.progress
+        try await Task.sleep(for: .milliseconds(160))
+        XCTAssertEqual(state.progress, interrupted)
+        state.receive(sample(80))
+        XCTAssertEqual(state.progress, interrupted + 0.1, accuracy: 0.000001)
+        state.settle(reduceMotion: false)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(state.progress, 0)
     }
 
-    func testHeaderResizeCannotTriggerCollapseOscillation() -> Void {
-        let previous = HomeNodeScrollSample(offset: 90, topInset: 112, viewportHeight: 600)
-        let resized = HomeNodeScrollSample(offset: 0, topInset: 40, viewportHeight: 672)
-        XCTAssertTrue(resized.collapsed(after: previous, wasCollapsed: true))
-        XCTAssertFalse(previous.collapsed(after: resized, wasCollapsed: false))
-        let invalid = HomeNodeScrollSample(offset: .nan, topInset: 112, viewportHeight: 600)
-        XCTAssertTrue(invalid.collapsed(after: previous, wasCollapsed: true))
+    func testReturningToTopCancelsSnapAndCannotRecollapseLater() async throws -> Void {
+        let state = HomeNodeScrollState()
+        state.receive(sample(0))
+        state.receive(sample(120))
+        state.settle(reduceMotion: false)
+        state.receive(sample(0))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(state.progress, 0)
+    }
+
+    func testFeedsKeepIndependentContinuousStateAndSnapLifecycle() async throws -> Void {
+        let states = HomeNodeScrollStates()
+        let first = states.state(for: .all)
+        let second = states.state(for: .r2)
+        first.receive(sample(0))
+        first.receive(sample(40))
+        second.receive(sample(0))
+        second.receive(sample(120))
+        XCTAssertTrue(states.state(for: .all) === first)
+        XCTAssertEqual(first.progress, 0.25)
+        XCTAssertEqual(second.progress, 0.75)
+        first.settle(reduceMotion: false)
+        second.settle(reduceMotion: false)
+        states.interruptAll()
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertEqual(first.progress, 0.25)
+        XCTAssertEqual(second.progress, 0.75)
     }
 
     func testMigrationPreservesVisibleNodesAndDoesNotFollowLaterSync() -> Void {
