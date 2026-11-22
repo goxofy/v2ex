@@ -65,6 +65,38 @@ enum Metrics {
         guard let hit = window.hitTest(point, with: nil) else { preconditionFailure("Missing rail hit") }
         precondition(hit === rail || hit.isDescendant(of: rail), "Inactive layer must not swallow active rail gestures")
     }
+    static func checkEndpoint(expanded: Bool) -> Void {
+        guard let window else { preconditionFailure("Missing window") }
+        let rails = scrollViews().filter { $0.contentSize.width > $0.bounds.width + 1 && $0.contentSize.height < 200 }
+        guard let visible = rails.first(where: { ($0.bounds.height > 60) == expanded }),
+              let hidden = rails.first(where: { ($0.bounds.height > 60) != expanded }) else {
+            preconditionFailure("Both endpoint rails must remain mounted")
+        }
+        let visibleFrame = visible.convert(visible.bounds, to: window)
+        let hiddenFrame = hidden.convert(hidden.bounds, to: window)
+        precondition(hiddenFrame.maxY <= visibleFrame.minY + 0.5,
+                     "Zero-opacity glass must be outside the visible header, not covering its first row")
+        var ancestor: UIView? = visible
+        while let view = ancestor {
+            precondition(view.alpha == 1 && !view.isHidden, "The active endpoint must be fully opaque")
+            ancestor = view.superview
+        }
+    }
+    static func checkCrossfade(progress: CGFloat) -> Void {
+        guard let window else { preconditionFailure("Missing window") }
+        precondition(progress > 0 && progress < 1, "Crossfade check needs an intermediate progress")
+        let rails = scrollViews().filter { $0.contentSize.width > $0.bounds.width + 1 && $0.contentSize.height < 200 }
+        precondition(rails.count == 2, "Both rails must stay mounted during the crossfade")
+        let origins = rails.map { $0.convert($0.bounds, to: window).minY }
+        precondition(abs(origins[0] - origins[1]) < 0.5, "Only a zero-opacity rail may move outside the clip")
+        for rail in rails {
+            var opacity: CGFloat = 1
+            var ancestor: UIView? = rail
+            while let view = ancestor { opacity *= view.alpha; ancestor = view.superview }
+            let expected = rail.bounds.height > 60 ? 1 - progress : progress
+            precondition(abs(opacity - expected) < 0.001, "The continuous crossfade must remain unchanged")
+        }
+    }
     static func checkTopicHit() -> Void {
         guard let window else { preconditionFailure("Missing window") }
         let scroll = topicScroll()
@@ -152,6 +184,7 @@ struct Probe: View {
         let railSizes = rails.map(\.contentSize)
         let railOffsets = rails.map(\.contentOffset)
         Metrics.checkRailHit(expanded: true)
+        Metrics.checkEndpoint(expanded: true)
         Metrics.reset()
         for offset in stride(from: 4, through: 160, by: 4) {
             scroll.setContentOffset(CGPoint(x: 0, y: CGFloat(offset) - inset.top), animated: false)
@@ -171,6 +204,7 @@ struct Probe: View {
         let held = Metrics.top()
         await pause(150)
         precondition(abs(Metrics.top() - held) < 0.1 && abs(state.progress - 0.4) < 0.001, "No independent drag animation")
+        Metrics.checkCrossfade(progress: state.progress)
         state.settle(reduceMotion: false)
         await pause(40)
         precondition(state.progress > 0 && state.progress < 0.4, "Snap needs intermediate frames")
@@ -181,12 +215,14 @@ struct Probe: View {
         state.settle(reduceMotion: false)
         await pause(180)
         precondition(state.progress == 0, "Lower-half snap must expand")
+        Metrics.checkEndpoint(expanded: true)
         scroll.setContentOffset(CGPoint(x: 0, y: 184 - inset.top), animated: false)
         await pause(80)
         state.settle(reduceMotion: false)
         await pause(180)
         precondition(state.progress == 1, "Upper-half snap must collapse")
         Metrics.checkRailHit(expanded: false)
+        Metrics.checkEndpoint(expanded: false)
         precondition(rails.map(\.contentSize) == railSizes && rails.map(\.contentOffset) == railOffsets,
                      "Scroll progress must not resize or reposition either rail")
         precondition(scroll.bounds.size == size && scroll.adjustedContentInset == inset, "Snap must not resize the viewport")
@@ -218,6 +254,7 @@ struct Probe: View {
         scroll.setContentOffset(CGPoint(x: 0, y: -inset.top), animated: false)
         await pause(100)
         precondition(state.progress == 0, "Top must fully expand")
+        Metrics.checkEndpoint(expanded: true)
         Metrics.checkTopicHit()
         feeds = [selected]
         await pause(250)
@@ -225,7 +262,7 @@ struct Probe: View {
         scroll.setContentOffset(CGPoint(x: 0, y: 160 - inset.top), animated: false)
         await pause(100)
         precondition(abs(Metrics.top() - sparseTop) < 0.5, "One-row configuration must not reserve phantom rows")
-        print("PROBE PASS: continuous/reverse/hold/snap/interruption/top/selection/reorder/resize/sparse/hit-testing/bottom")
+        print("PROBE PASS: endpoints/crossfade/continuous/reverse/hold/snap/interruption/top/selection/reorder/resize/sparse/hit-testing/bottom")
         fflush(stdout)
         exit(0)
     }
