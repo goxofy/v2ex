@@ -18,14 +18,16 @@ def main() -> None:
         sources.mkdir(parents=True)
         tests.mkdir(parents=True)
         for name in ["Networking/V2EXClient.swift", "Networking/ReplySubmission.swift",
-                     "Networking/HTMLContent.swift", "Models/Models.swift",
+                     "Networking/HTMLContent.swift", "Networking/ImgurImageLink.swift", "Models/Models.swift",
+                     "Networking/ImgurUploadClient.swift", "Features/Compose/ImageTextInsertion.swift",
+                     "Features/Compose/ImageUploadCoordinator.swift", "Features/Compose/UploadImagePreparation.swift",
                      "Networking/TopicMovePage.swift", "Networking/TopicMoveService.swift",
                      "Storage/TopicMoveStore.swift", "Storage/V2EXSessionStore.swift",
                      "Storage/HomeTabsStore.swift", "Features/Nodes/NodeCatalog.swift",
                      "Networking/FollowingService.swift", "Features/Home/HomeViewModel.swift",
                      "Features/Home/HomeRefreshFeedback.swift", "Features/Home/HomeNodeLayout.swift"]:
             shutil.copy2(root / "V2EX" / name, sources)
-        for name in ["ReplySubmissionTests.swift", "NodeFollowingTests.swift", "TopicMoveTests.swift", "TopicMoveStoreTests.swift", "HomeTabsTests.swift", "FollowingTests.swift"]:
+        for name in ["ReplySubmissionTests.swift", "NodeFollowingTests.swift", "TopicMoveTests.swift", "TopicMoveStoreTests.swift", "HomeTabsTests.swift", "FollowingTests.swift", "ImageContentTests.swift", "ImgurUploadTests.swift", "ImageInsertionTests.swift", "UploadImagePreparationTests.swift"]:
             shutil.copy2(root / "V2EXTests" / name, tests)
         (package / "Package.swift").write_text('''// swift-tools-version: 5.9
 import PackageDescription

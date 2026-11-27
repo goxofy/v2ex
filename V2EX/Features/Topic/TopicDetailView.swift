@@ -24,6 +24,8 @@ struct TopicDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @StateObject private var imageUpload = ImageUploadCoordinator()
+    @StateObject private var imageSelection = ImageEditorSelection()
     @State private var replyError: String?
     @State private var replyIsUnconfirmed = false
     @State private var showReplyError = false
@@ -136,7 +138,15 @@ struct TopicDetailView: View {
             }
         }
         .sheet(item: $reportTarget) { ReportSheet(target: $0) }
-        .onDisappear { replyDrafts.save() }
+        .onChange(of: imageSelection.value) { _, _ in imageSelection.record(in: replyDrafts.text(for: topicID)) }
+        .onChange(of: topicID) { _, _ in
+            imageSelection.reset()
+            imageUpload.setContext(imageUploadContext)
+        }
+        .onDisappear {
+            imageUpload.setContext(nil)
+            replyDrafts.save()
+        }
     }
 
     /// 分享相关面板共用的摘要输入：正文 + 可见回复组成的源文本、缓存签名
@@ -301,9 +311,8 @@ struct TopicDetailView: View {
 
     /// The `@name` fragment being typed at the tail of the draft, if any.
     ///
-    /// Only the tail is examined. SwiftUI's `TextField` exposes no caret
-    /// position, and mentioning someone mid-sentence after the fact is rare
-    /// enough that it isn't worth dropping down to a `UITextView` for.
+    /// Keep the existing tail-only mention completion behavior. The tracked
+    /// selection is currently used only for inserting uploaded image links.
     private var activeMentionQuery: String? {
         let text = replyDrafts.text(for: topicID)
         guard let at = text.lastIndex(of: "@") else { return nil }
@@ -392,6 +401,10 @@ struct TopicDetailView: View {
             .detailHairline(in: trayShape)
             .transition(.opacity)
         }
+    }
+
+    private var imageUploadContext: String {
+        "reply:\(topicID):\(session.isLoggedIn):\(session.username)"
     }
 
     private var replyDraftBinding: Binding<String> {
@@ -851,8 +864,19 @@ struct TopicDetailView: View {
     /// GlassContainer (GlassEffectContainer on iOS 26) so their glass blends instead of stacking.
     /// 已登录（网页会话）时直接在 app 内输入并发送；未登录时跳网页版。
     private var composerBar: some View {
-        HStack(alignment: .bottom, spacing: 12) {
-            TextField("写下你的回复…", text: replyDraftBinding, axis: .vertical)
+        HStack(alignment: .bottom, spacing: 8) {
+            ImageUploadButton(
+                upload: imageUpload, context: imageUploadContext, disabled: isSending,
+                onPrepareSelection: { imageSelection.record(in: replyDrafts.text(for: topicID)) },
+                onUploaded: { url in
+                    guard imageUpload.context == imageUploadContext, !isSending, session.isLoggedIn else { return }
+                    imageSelection.insert(url, into: replyDraftBinding)
+                    replyDrafts.save()
+                    isComposerHidden = false
+                    composerFocused = true
+                }
+            )
+            TextField("写下你的回复…", text: replyDraftBinding, selection: $imageSelection.value, axis: .vertical)
                 .lineLimit(1...6)
                 .font(.system(size: 16))
                 .focused($composerFocused)
@@ -875,7 +899,7 @@ struct TopicDetailView: View {
             .controlSize(.large)
             .tint(Theme.accent)
             .disabled(
-                isSending
+                isSending || imageUpload.isUploading
                     || replyDrafts.text(for: topicID)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .isEmpty
@@ -935,7 +959,7 @@ struct TopicDetailView: View {
     private func sendReply() async {
         let content = replyDrafts.text(for: topicID)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, !isSending else { return }
+        guard !content.isEmpty, !isSending, !imageUpload.isUploading else { return }
         isSending = true
         defer { isSending = false }
         do {
@@ -943,6 +967,7 @@ struct TopicDetailView: View {
                 topicID: topicID, content: content, cookie: session.cookie, username: session.username
             )
             replyDrafts.clear(topicID: topicID)
+            imageSelection.reset()
             composerFocused = false
             await model.load(
                 id: topicID,

@@ -81,6 +81,7 @@ dependencies {
     // 分享卡片的二维码生成（纯 JVM，无传递依赖）。
     implementation("com.google.zxing:core:3.5.3")
     implementation(libs.androidx.core.ktx)
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)

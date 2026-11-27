@@ -7,6 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		6DED5757487E499B95892313 /* UploadImagePreparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C51887E6BFDE1303477EA8F /* UploadImagePreparationTests.swift */; };
+		A8115142BA810376FD2EBB04 /* ImgurUploadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27E627C8BBB891E28AE404E8 /* ImgurUploadTests.swift */; };
+		D034BCD90DAE7B903FA1E50F /* ImageInsertionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317DDC081D89DFA8DDCA06E1 /* ImageInsertionTests.swift */; };
+		EB367FCD5377046C11A2BE7C /* ImageContentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03CF25C7CA1DC344852DB542 /* ImageContentTests.swift */; };
+		D3EF1F81719074E108484B6A /* ImgurSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4E48F75EBEB1FD7175DE385 /* ImgurSettingsView.swift */; };
+		73CC945A5EDC793024336853 /* UploadImagePreparation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79E3AF280B009756B4E1961A /* UploadImagePreparation.swift */; };
+		4581FFE8C1D6572062FBCB96 /* ImageUploadButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF22076438EBB5A9A39051B0 /* ImageUploadButton.swift */; };
+		FCBFF99DB3EE09B63D595795 /* ImageUploadCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE0AC5F20326A0BCDC9D4A30 /* ImageUploadCoordinator.swift */; };
+		9F51106E41864C983EA620F7 /* ImageEditorSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6693C744BF6EC0E4C8C7415C /* ImageEditorSelection.swift */; };
+		D916D6887F1B4A02F22A9C90 /* ImageTextInsertion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7191EEFC154FF99EE7D8EEE6 /* ImageTextInsertion.swift */; };
+		2E35DF515A95F31A4E193890 /* ImgurUploadClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E94E8F3A1CF554C23148F27 /* ImgurUploadClient.swift */; };
+		0182FCD2C57F97810F460FC3 /* ImgurImageLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 241493CD963C895C57937187 /* ImgurImageLink.swift */; };
 		CA21E361FDB8473BBA890103 /* HomeNodeLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA21E361FDB8473BBA890104 /* HomeNodeLayout.swift */; };
 		CA21E361FDB8473BBA890101 /* HomeRefreshFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA21E361FDB8473BBA890102 /* HomeRefreshFeedback.swift */; };
 		A225FB651D588B3AFE128702 /* FollowingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6631D99D03F6233E817576A /* FollowingTests.swift */; };
@@ -93,6 +105,18 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		9C51887E6BFDE1303477EA8F /* UploadImagePreparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadImagePreparationTests.swift; sourceTree = "<group>"; };
+		27E627C8BBB891E28AE404E8 /* ImgurUploadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImgurUploadTests.swift; sourceTree = "<group>"; };
+		317DDC081D89DFA8DDCA06E1 /* ImageInsertionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageInsertionTests.swift; sourceTree = "<group>"; };
+		03CF25C7CA1DC344852DB542 /* ImageContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageContentTests.swift; sourceTree = "<group>"; };
+		B4E48F75EBEB1FD7175DE385 /* ImgurSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImgurSettingsView.swift; sourceTree = "<group>"; };
+		79E3AF280B009756B4E1961A /* UploadImagePreparation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadImagePreparation.swift; sourceTree = "<group>"; };
+		EF22076438EBB5A9A39051B0 /* ImageUploadButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageUploadButton.swift; sourceTree = "<group>"; };
+		BE0AC5F20326A0BCDC9D4A30 /* ImageUploadCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageUploadCoordinator.swift; sourceTree = "<group>"; };
+		6693C744BF6EC0E4C8C7415C /* ImageEditorSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorSelection.swift; sourceTree = "<group>"; };
+		7191EEFC154FF99EE7D8EEE6 /* ImageTextInsertion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageTextInsertion.swift; sourceTree = "<group>"; };
+		2E94E8F3A1CF554C23148F27 /* ImgurUploadClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImgurUploadClient.swift; sourceTree = "<group>"; };
+		241493CD963C895C57937187 /* ImgurImageLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImgurImageLink.swift; sourceTree = "<group>"; };
 		CA21E361FDB8473BBA890104 /* HomeNodeLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeNodeLayout.swift; sourceTree = "<group>"; };
 		CA21E361FDB8473BBA890102 /* HomeRefreshFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeRefreshFeedback.swift; sourceTree = "<group>"; };
 		C6631D99D03F6233E817576A /* FollowingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FollowingTests.swift; sourceTree = "<group>"; };
@@ -177,6 +201,8 @@
 			children = (
 				FEB41278F2A7A209EAC2FFBE /* AISummaryClient.swift */,
 				B81F6BD7C210C928142B5902 /* HTMLContent.swift */,
+				2E94E8F3A1CF554C23148F27 /* ImgurUploadClient.swift */,
+				241493CD963C895C57937187 /* ImgurImageLink.swift */,
 				A203918D4F124BCC87CE1102 /* ReplySubmission.swift */,
 				1DB169C5CB8ADBE27CA58696 /* TopicMoveService.swift */,
 				DB791B89FC5F9B26DF2A1D5C /* FollowingService.swift */,
@@ -222,6 +248,7 @@
 				B3B84980772339101412FD07 /* CustomDomainView.swift */,
 				33525BBBEC560134B5B0A656 /* ReadingSettingsView.swift */,
 				952ED920E11A6B7AB4548070 /* SettingsView.swift */,
+				B4E48F75EBEB1FD7175DE385 /* ImgurSettingsView.swift */,
 				DE43160F1E2E5D55DFDD961B /* V2EXLoginView.swift */,
 				599F3445401BCF070618A7AD /* WebLoginView.swift */,
 			);
@@ -285,6 +312,11 @@
 			isa = PBXGroup;
 			children = (
 				CDB8EEE6F354D43ED07700B4 /* ComposeView.swift */,
+				79E3AF280B009756B4E1961A /* UploadImagePreparation.swift */,
+				EF22076438EBB5A9A39051B0 /* ImageUploadButton.swift */,
+				BE0AC5F20326A0BCDC9D4A30 /* ImageUploadCoordinator.swift */,
+				6693C744BF6EC0E4C8C7415C /* ImageEditorSelection.swift */,
+				7191EEFC154FF99EE7D8EEE6 /* ImageTextInsertion.swift */,
 			);
 			path = Compose;
 			sourceTree = "<group>";
@@ -331,6 +363,10 @@
 				88A4743BB56BF8215D1A511D /* CustomEndpointTests.swift */,
 				277100A13A4163C35603227F /* NodeFollowingTests.swift */,
 				A203918D4F124BCC87CE1104 /* ReplySubmissionTests.swift */,
+				9C51887E6BFDE1303477EA8F /* UploadImagePreparationTests.swift */,
+				27E627C8BBB891E28AE404E8 /* ImgurUploadTests.swift */,
+				317DDC081D89DFA8DDCA06E1 /* ImageInsertionTests.swift */,
+				03CF25C7CA1DC344852DB542 /* ImageContentTests.swift */,
 				0460F4065309852BFA70DFF5 /* TopicMoveTests.swift */,
 				C6631D99D03F6233E817576A /* FollowingTests.swift */,
 				A203918D4F124BCC87CE1112 /* TopicMoveStoreTests.swift */,
@@ -512,6 +548,11 @@
 				2EA907F51E2A5D358921547A /* AutoOfflineCoordinator.swift in Sources */,
 				956D703BF0A8AE874156964E /* Components.swift in Sources */,
 				8287A655678BAA296EE59879 /* ComposeView.swift in Sources */,
+				73CC945A5EDC793024336853 /* UploadImagePreparation.swift in Sources */,
+				4581FFE8C1D6572062FBCB96 /* ImageUploadButton.swift in Sources */,
+				FCBFF99DB3EE09B63D595795 /* ImageUploadCoordinator.swift in Sources */,
+				9F51106E41864C983EA620F7 /* ImageEditorSelection.swift in Sources */,
+				D916D6887F1B4A02F22A9C90 /* ImageTextInsertion.swift in Sources */,
 				248E27B5665B1D3DE8B94970 /* CustomDomainView.swift in Sources */,
 				D46372D9C30049B54BB4352C /* HNClient.swift in Sources */,
 				65C315A7FAC19E187BE700FA /* HNDetailView.swift in Sources */,
@@ -519,6 +560,8 @@
 				5D561C729264DDF1FB17BEB4 /* HNTranslationCache.swift in Sources */,
 				2A769EB31609EB038AEA5869 /* HNTranslator.swift in Sources */,
 				1F78C3DC3E570CB4FB4DEB28 /* HTMLContent.swift in Sources */,
+				2E35DF515A95F31A4E193890 /* ImgurUploadClient.swift in Sources */,
+				0182FCD2C57F97810F460FC3 /* ImgurImageLink.swift in Sources */,
 				A203918D4F124BCC87CE1101 /* ReplySubmission.swift in Sources */,
 				7F26E1187DE62ADD717395AB /* TopicMoveService.swift in Sources */,
 				5AF551BA9B325C18DE0138FD /* FollowingService.swift in Sources */,
@@ -545,6 +588,7 @@
 				72A8756B74DD7790ED203CDA /* RootView.swift in Sources */,
 				50594CE11A04C285C941FF4D /* SearchView.swift in Sources */,
 				355D84D49DE8FA4465BB2F82 /* SettingsView.swift in Sources */,
+				D3EF1F81719074E108484B6A /* ImgurSettingsView.swift in Sources */,
 				2C7639CB4688CFFDD8FE95EB /* SpotlightIndexer.swift in Sources */,
 				BF282EF7599568F5946D286E /* Stores.swift in Sources */,
 				F8613111C964B3A9D6E184E4 /* SubViews.swift in Sources */,
@@ -575,6 +619,10 @@
 				AA20419B760ADE73BA40DB20 /* CustomEndpointTests.swift in Sources */,
 				F44719FC901CC893180C53B3 /* NodeFollowingTests.swift in Sources */,
 				A203918D4F124BCC87CE1103 /* ReplySubmissionTests.swift in Sources */,
+				6DED5757487E499B95892313 /* UploadImagePreparationTests.swift in Sources */,
+				A8115142BA810376FD2EBB04 /* ImgurUploadTests.swift in Sources */,
+				D034BCD90DAE7B903FA1E50F /* ImageInsertionTests.swift in Sources */,
+				EB367FCD5377046C11A2BE7C /* ImageContentTests.swift in Sources */,
 				938AE47EC9B7F5DA0CA4BED0 /* TopicMoveTests.swift in Sources */,
 				A225FB651D588B3AFE128702 /* FollowingTests.swift in Sources */,
 				A203918D4F124BCC87CE1111 /* TopicMoveStoreTests.swift in Sources */,

@@ -10,6 +10,37 @@ Requires macOS 14+ with a Swift 5.9+ toolchain. Runs `ReplySubmissionTests` and 
 
 Covers form-scoped tokens, form encoding, cookie/header consistency, explicit server errors, authentication/challenges, pagination, new-reply confirmation, unconfirmed outcomes, and at most one POST per action. All HTTP responses are local URLProtocol fixtures; no real replies are posted. The tests also belong to the app's normal XCTest target. For an end-to-end check, use a reply you intended to post, confirm it appears on the website, and check that the app clears the draft only after confirmation. An unconfirmed result must preserve the draft and offer a website link rather than encourage immediate resubmission.
 
+## Imgur upload, cursor insertion and reply images
+
+```sh
+python3 tests/check-reply-submission.py
+cd android
+./gradlew testDebugUnitTest assembleDebug lintDebug
+```
+
+Swift's runner includes `ImageContentTests`, `ImageInsertionTests`, `ImageUploadLifecycleTests`, `ImgurUploadTests`, and `UploadImagePreparationTests`. Android's JVM suite includes `ImageContentTest`, `ImageTextInsertionTest`, `ImageUploadCoordinatorTest`, `UploadImageContainerTest`, and `ImgurUploadServiceTest`. Requests use URLProtocol/MockWebServer fixtures; tests never upload personal photos or send credentials to Imgur. Synthetic Swift image fixtures cover small transparent PNGs, orientation, downsampling, removal of GPS metadata, animated GIF rejection, and input-size checks. Android bitmap preparation requires device/emulator acceptance in addition to compilation; JVM tests do not exercise Android's bitmap decoder.
+
+Coverage includes nested HTML images, mixed text/image anchors, quotes/lists, multiple images, standalone raw Imgur URLs, code/escaped HTML exclusions, cursor insertion/selection replacement, surrogate pairs, current-text preservation, duplicate clicks, cancellation and stale results after leaving and returning. HTTP tests verify multipart and Client-ID, no inherited V2EX cookies/tokens/interceptors, invalid raw URLs, malformed responses, status failures, cancellation and no redirect/retry (including Android's 503 + Retry-After follow-up).
+
+For native iOS editor and picker lifecycle checks, with Xcode, xcodegen and an iOS 18+ simulator:
+
+```sh
+python3 tests/check-image-upload-ui.py --device <simulator-uuid>
+```
+
+This isolated test app compiles the production upload/selection components with fixture settings/theme and an in-memory transport. It checks both TextField and TextEditor caret behavior, continued typing while an upload is pending, insertion and subsequent caret position, plus system photo-picker cancellation preserving the context and caret. It does **not** build the full app, verify iOS 26 visuals, or contact Imgur. Generated projects/builds are temporary (under `CLAUDE_JOB_DIR/tmp` when set).
+
+### On-device acceptance (both platforms)
+
+1. Open Settings → 图片上传, save your own Imgur **Client ID** (not Client Secret). Clear it and tap the upload icon from a reply and the new-topic “格式” toolbar: configuration should open without losing text or selection. Saving configuration must not upload automatically.
+2. Confirm the public-upload notice, then select one **non-sensitive** static JPEG/PNG/HEIC. Cancelling the notice or picker must leave the draft unchanged. No full-library permission is required. Test small PNGs, transparent PNGs, rotated JPEGs and HEIC conversion; unsupported/animated or oversized input must produce an error without insertion. Outputs are re-encoded, at most 4096px on the longest edge and 10 MiB (input at most 40 MiB).
+3. In `甲乙😀丙丁`, place the cursor in the middle (also test selecting text). Successful upload must replace only that selection with exactly `\nhttps://i.imgur.com/<id>.<extension>\n`, without Markdown syntax. Existing newlines are preserved. The caret must move past the final newline and the draft must survive reopening.
+4. While uploading, continue typing/moving the cursor, including Chinese IME composition. Completion must use the latest text/selection, never restore an old snapshot. Repeated upload taps must not create extra requests; send/publish remains unavailable until the operation ends. Check @mention completion and existing format buttons afterward.
+5. Leave the editor, switch drafts/topics/accounts, or rotate Android during an upload. Late results must not modify another/new editor. Failure/cancellation must retain the draft and must not claim that a potentially uploaded remote image was deleted. Configuration changes and local draft deletion do not delete Imgur images.
+6. Read an intended test reply containing a standalone raw URL and existing replies with nested image HTML, multiple images, quotes/lists, and mentions. Image ordering and text styles should be preserved. iOS opens the existing native preview; Android opens the original image URL. A descriptive link, inline/code-block URL or escaped HTML example must remain text. Test a failed image load and the original-image fallback.
+
+Real upload acceptance requires your own Client ID and intentional, non-sensitive images. An upload can already be publicly accessible **before** posting the draft. Automated passing tests are not a claim of real Imgur service availability, full iOS 26 application validation, or Android photo-picker/bitmap runtime validation.
+
 ## Moderation
 
 Run from the repository root:

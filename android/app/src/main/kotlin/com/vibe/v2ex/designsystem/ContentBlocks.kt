@@ -32,6 +32,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -92,6 +94,32 @@ fun ContentBlocksView(
                             extraSpacing,
                         )
                         is ContentBlock.ListBlock -> ListBlockView(block.items, readerStyle, linkColor)
+                        is ContentBlock.QuoteContent -> {
+                            val quoteColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                            ContentBlocksView(
+                                blocks = block.blocks,
+                                textStyle = textStyle,
+                                fontSizeOffset = fontSizeOffset - 1f,
+                                lineSpacingScale = lineSpacingScale * 0.8f,
+                                modifier = Modifier.drawBehind {
+                                    drawLine(quoteColor, Offset.Zero, Offset(0f, size.height), 2.5.dp.toPx())
+                                }.padding(start = 12.dp),
+                            )
+                        }
+                        is ContentBlock.ListContent -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            block.items.forEach { contents ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("•", style = readerStyle, color = linkColor)
+                                    ContentBlocksView(
+                                        blocks = contents,
+                                        modifier = Modifier.weight(1f),
+                                        textStyle = textStyle,
+                                        fontSizeOffset = fontSizeOffset,
+                                        lineSpacingScale = lineSpacingScale,
+                                    )
+                                }
+                            }
+                        }
                         is ContentBlock.Image -> ContentImage(block.url)
                         ContentBlock.Rule -> HorizontalDivider(
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f),

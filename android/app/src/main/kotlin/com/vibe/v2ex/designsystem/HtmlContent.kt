@@ -9,6 +9,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import com.vibe.v2ex.data.remote.ImgurImageLink
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
@@ -21,23 +22,17 @@ sealed interface ContentBlock {
     data class Code(val code: String) : ContentBlock
     data class Quote(val text: AnnotatedString) : ContentBlock
     data class ListBlock(val items: List<AnnotatedString>) : ContentBlock
+    data class QuoteContent(val blocks: List<ContentBlock>) : ContentBlock
+    data class ListContent(val items: List<List<ContentBlock>>) : ContentBlock
     data class Image(val url: String) : ContentBlock
     data object Rule : ContentBlock
 }
 
-/**
- * Parses V2EX-rendered HTML into [ContentBlock]s. Images are hoisted out of
- * `<p>`/`<blockquote>` (bare or `<a>`-wrapped) into standalone [ContentBlock.Image]
- * blocks, splitting the surrounding text — an image that only surfaces deeper in
- * the tree falls through to the inline pass as a tappable "[图片]" placeholder.
- */
+/** Images retain their position inside inline wrappers, lists and quotes. */
 fun parseContentBlocks(html: String): List<ContentBlock> {
     if (html.isBlank()) return emptyList()
     return try {
-        val sink = BlockSink()
-        Jsoup.parseBodyFragment(html).body().childNodes().forEach { sink.appendBlockNode(it) }
-        sink.flushPending(PARAGRAPH)
-        sink.blocks
+        blockContent(Jsoup.parseBodyFragment(html).body().childNodes(), 0)
     } catch (error: Exception) {
         plainTextFallback(html)
     } catch (error: StackOverflowError) {
@@ -62,200 +57,142 @@ fun absoluteContentUrl(raw: String?): String? {
     }
 }
 
-private val PARAGRAPH: (AnnotatedString) -> ContentBlock = { ContentBlock.Paragraph(it) }
-private val QUOTE: (AnnotatedString) -> ContentBlock = { ContentBlock.Quote(it) }
-private val NEWLINE = AnnotatedString("\n")
-
-private class BlockSink {
-    val blocks = mutableListOf<ContentBlock>()
-    private val pending = mutableListOf<AnnotatedString>()
-
-    fun appendBlockNode(node: Node) {
-        when (node) {
-            is TextNode -> appendPending(inlineNodes(listOf(node)))
-            is Element -> when (node.tagName()) {
-                "p" -> {
-                    flushPending(PARAGRAPH)
-                    appendHoisting(node.childNodes(), PARAGRAPH)
-                    flushPending(PARAGRAPH)
-                }
-                "blockquote" -> {
-                    flushPending(PARAGRAPH)
-                    appendHoisting(node.childNodes(), QUOTE)
-                    flushPending(QUOTE)
-                }
-                "pre" -> {
-                    flushPending(PARAGRAPH)
-                    emitCode(node.wholeText())
-                }
-                "code" -> {
-                    // V2EX sometimes emits multi-line code with no wrapping <pre>;
-                    // single-line <code> stays an inline monospace span.
-                    val text = node.wholeText()
-                    if (text.contains('\n')) {
-                        flushPending(PARAGRAPH)
-                        emitCode(text)
-                    } else {
-                        appendPending(inlineNodes(listOf(node)))
-                    }
-                }
-                "ul", "ol" -> {
-                    flushPending(PARAGRAPH)
-                    val items = node.children()
-                        .filter { it.tagName() == "li" }
-                        .map { inlineNodes(it.childNodes()).trimWhitespace() }
-                        .filter { it.text.isNotBlank() }
-                    if (items.isNotEmpty()) blocks += ContentBlock.ListBlock(items)
-                }
-                "hr" -> {
-                    flushPending(PARAGRAPH)
-                    blocks += ContentBlock.Rule
-                }
-                "img" -> {
-                    flushPending(PARAGRAPH)
-                    emitImage(node)
-                }
-                "a" -> {
-                    val hoisted = wrappedImageUrls(node)
-                    if (hoisted.isNotEmpty()) {
-                        flushPending(PARAGRAPH)
-                        hoisted.forEach { blocks += ContentBlock.Image(it) }
-                    } else {
-                        appendPending(inlineNodes(listOf(node)))
-                    }
-                }
-                "br" -> appendPending(NEWLINE)
-                "div", "section", "article" -> node.childNodes().forEach { appendBlockNode(it) }
-                "h1", "h2", "h3", "h4", "h5", "h6" -> {
-                    flushPending(PARAGRAPH)
-                    val heading = buildAnnotatedString {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            append(inlineNodes(node.childNodes()))
-                        }
-                    }.trimWhitespace()
-                    if (heading.text.isNotBlank()) blocks += ContentBlock.Paragraph(heading)
-                }
-                else -> appendPending(inlineNodes(listOf(node)))
-            }
-            else -> Unit
+private data class InlineStyle(
+    val span: SpanStyle = SpanStyle(),
+    val link: String? = null,
+) {
+    fun apply(text: String): AnnotatedString = buildAnnotatedString {
+        withStyle(span) {
+            if (link != null) withLink(LinkAnnotation.Url(link)) { append(text) } else append(text)
         }
     }
+}
 
-    /** Walks `<p>`/`<blockquote>` children, promoting images to standalone blocks and splitting text around them. */
-    private fun appendHoisting(nodes: List<Node>, wrap: (AnnotatedString) -> ContentBlock) {
-        nodes.forEach { node ->
+private fun blockContent(nodes: List<Node>, depth: Int): List<ContentBlock> {
+    val blocks = mutableListOf<ContentBlock>()
+    val pending = mutableListOf<AnnotatedString>()
+
+    fun flush(): Unit {
+        blocks += imageLines(buildAnnotatedString { pending.forEach { append(it) } }.trimWhitespace())
+        pending.clear()
+    }
+
+    fun walk(children: List<Node>, style: InlineStyle, level: Int): Unit {
+        if (level >= 64) {
+            pending += style.apply(children.filterIsInstance<TextNode>().joinToString("") { it.wholeText })
+            return
+        }
+        children.forEach { node ->
             when (node) {
-                is TextNode -> appendPending(inlineNodes(listOf(node)))
+                is TextNode -> pending += style.apply(node.wholeText)
                 is Element -> when (node.tagName()) {
+                    "script", "style" -> Unit
                     "img" -> {
-                        flushPending(wrap)
-                        emitImage(node)
-                    }
-                    "a" -> {
-                        val hoisted = wrappedImageUrls(node)
-                        if (hoisted.isNotEmpty()) {
-                            flushPending(wrap)
-                            hoisted.forEach { blocks += ContentBlock.Image(it) }
-                        } else {
-                            appendPending(inlineNodes(listOf(node)))
+                        val url = absoluteContentUrl(node.attr("src"))
+                        val scheme = url?.let { runCatching { URI(it).scheme?.lowercase() }.getOrNull() }
+                        if (url != null && scheme in setOf("https", "http")) {
+                            flush()
+                            blocks += ContentBlock.Image(url)
                         }
                     }
-                    "br" -> appendPending(NEWLINE)
-                    "p", "div", "blockquote" -> {
-                        separatorNewline()
-                        appendHoisting(node.childNodes(), wrap)
+                    "br" -> pending += style.apply("\n")
+                    "hr" -> {
+                        flush()
+                        blocks += ContentBlock.Rule
                     }
-                    else -> appendPending(inlineNodes(listOf(node)))
+                    "pre", "code" -> {
+                        val text = node.wholeText()
+                        if (node.tagName() == "pre" || text.contains('\n')) {
+                            flush()
+                            if (text.isNotBlank()) blocks += ContentBlock.Code(text.trim('\n', '\r'))
+                        } else {
+                            pending += style.copy(span = style.span.merge(SpanStyle(fontFamily = FontFamily.Monospace)))
+                                .apply(text)
+                        }
+                    }
+                    "blockquote" -> {
+                        flush()
+                        val contents = blockContent(node.childNodes(), level + 1)
+                        if (contents.all { it is ContentBlock.Paragraph }) {
+                            blocks += contents.map { ContentBlock.Quote((it as ContentBlock.Paragraph).text) }
+                        } else if (contents.isNotEmpty()) {
+                            blocks += ContentBlock.QuoteContent(contents)
+                        }
+                    }
+                    "ul", "ol" -> {
+                        flush()
+                        val items = node.children().filter { it.tagName() == "li" }
+                            .map { blockContent(it.childNodes(), level + 1) }.filter { it.isNotEmpty() }
+                        if (items.isNotEmpty()) {
+                            blocks += if (items.all { it.size == 1 && it[0] is ContentBlock.Paragraph }) {
+                                ContentBlock.ListBlock(items.map { (it[0] as ContentBlock.Paragraph).text })
+                            } else {
+                                ContentBlock.ListContent(items)
+                            }
+                        }
+                    }
+                    "p", "div", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6" -> {
+                        flush()
+                        val nested = if (node.tagName().startsWith("h")) {
+                            style.copy(span = style.span.merge(SpanStyle(fontWeight = FontWeight.Bold)))
+                        } else style
+                        walk(node.childNodes(), nested, level + 1)
+                        flush()
+                    }
+                    else -> {
+                        val nested = when (node.tagName()) {
+                            "strong", "b" -> style.copy(span = style.span.merge(SpanStyle(fontWeight = FontWeight.Bold)))
+                            "em", "i" -> style.copy(span = style.span.merge(SpanStyle(fontStyle = FontStyle.Italic)))
+                            "a" -> style.copy(link = linkTarget(node.attr("href"), node.text()))
+                            else -> style
+                        }
+                        walk(node.childNodes(), nested, level + 1)
+                    }
                 }
                 else -> Unit
             }
         }
     }
 
-    fun flushPending(wrap: (AnnotatedString) -> ContentBlock) {
-        if (pending.isEmpty()) return
-        val merged = buildAnnotatedString { pending.forEach { append(it) } }.trimWhitespace()
-        pending.clear()
-        if (merged.text.isNotBlank()) blocks += wrap(merged)
-    }
-
-    private fun appendPending(text: AnnotatedString) {
-        if (text.text.isNotEmpty()) pending += text
-    }
-
-    private fun separatorNewline() {
-        if (!pendingIsBlank() && !pendingEndsWithNewline()) pending += NEWLINE
-    }
-
-    private fun pendingIsBlank() = pending.all { it.text.isBlank() }
-
-    private fun pendingEndsWithNewline(): Boolean {
-        for (i in pending.indices.reversed()) {
-            val text = pending[i].text
-            if (text.isNotEmpty()) return text.last() == '\n'
-        }
-        return true
-    }
-
-    private fun emitImage(img: Element) {
-        absoluteContentUrl(img.attr("src"))?.let { blocks += ContentBlock.Image(it) }
-    }
-
-    private fun emitCode(text: String) {
-        val code = text.trim { it == '\n' || it == '\r' }
-        if (code.isNotBlank()) blocks += ContentBlock.Code(code)
-    }
+    walk(nodes, InlineStyle(), depth)
+    flush()
+    return blocks
 }
 
-/** Image URLs of an anchor that is purely an image wrapper (no visible label text). */
-private fun wrappedImageUrls(anchor: Element): List<String> {
-    val images = anchor.select("img")
-    if (images.isEmpty() || anchor.text().isNotBlank()) return emptyList()
-    return images.mapNotNull { absoluteContentUrl(it.attr("src")) }
-}
-
-private fun inlineNodes(nodes: List<Node>): AnnotatedString =
-    buildAnnotatedString { nodes.forEach { appendInlineNode(it) } }
-
-private fun AnnotatedString.Builder.appendInlineNode(node: Node) {
-    when (node) {
-        is TextNode -> append(node.text())
-        is Element -> when (node.tagName()) {
-            "br" -> append("\n")
-            "strong", "b" -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { appendInlineChildren(node) }
-            "em", "i" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { appendInlineChildren(node) }
-            "code" -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { appendInlineChildren(node) }
-            "a" -> {
-                val target = linkTarget(node.attr("href"), node.text())
-                if (target != null) {
-                    withLink(LinkAnnotation.Url(target)) { appendInlineChildren(node) }
-                } else {
-                    appendInlineChildren(node)
-                }
+/** Only whole direct-URL lines expand; code and descriptive links stay text. */
+private fun imageLines(text: AnnotatedString): List<ContentBlock> {
+    if (text.isEmpty()) return emptyList()
+    val blocks = mutableListOf<ContentBlock>()
+    var pending = AnnotatedString.Builder()
+    var start = 0
+    while (start <= text.length) {
+        val newline = text.text.indexOf('\n', start)
+        val end = if (newline < 0) text.length else newline
+        val line = text.subSequence(start, end)
+        val candidate = line.trimWhitespace()
+        val url = ImgurImageLink.parse(candidate.text)
+        val allowed = candidate.spanStyles.none { it.item.fontFamily == FontFamily.Monospace } &&
+            candidate.getLinkAnnotations(0, candidate.length).all {
+                (it.item as? LinkAnnotation.Url)?.url == url
             }
-            "img" -> {
-                val src = absoluteContentUrl(node.attr("src"))
-                if (src != null) {
-                    withLink(LinkAnnotation.Url(src)) { append("[图片]") }
-                } else {
-                    append("[图片]")
-                }
-            }
-            else -> appendInlineChildren(node)
+        if (url != null && allowed) {
+            val before = pending.toAnnotatedString().trimWhitespace()
+            if (before.isNotEmpty()) blocks += ContentBlock.Paragraph(before)
+            pending = AnnotatedString.Builder()
+            blocks += ContentBlock.Image(url)
+        } else {
+            pending.append(line)
+            if (newline >= 0) pending.append('\n')
         }
-        else -> Unit
+        if (newline < 0) break
+        start = newline + 1
     }
+    val remainder = pending.toAnnotatedString().trimWhitespace()
+    if (remainder.isNotEmpty()) blocks += ContentBlock.Paragraph(remainder)
+    return blocks
 }
 
-private fun AnnotatedString.Builder.appendInlineChildren(element: Element) {
-    element.childNodes().forEach { appendInlineNode(it) }
-}
-
-/**
- * Missing/unusable href falls back to the label when the label itself is a full
- * http(s) URL with a host — handles V2EX's `[https://example.com]()` markdown quirk.
- * A plain-text label ("点这里") with an empty href stays unlinked.
- */
+/** Missing href falls back to a full http(s) URL label, never a descriptive label. */
 private fun linkTarget(href: String, label: String): String? {
     val trimmedHref = href.trim()
     if (trimmedHref.isNotEmpty()) return absoluteContentUrl(trimmedHref)

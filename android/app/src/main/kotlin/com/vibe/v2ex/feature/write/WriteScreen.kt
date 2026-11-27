@@ -1,5 +1,12 @@
 package com.vibe.v2ex.feature.write
 
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import com.vibe.v2ex.feature.imageupload.ImageUploadButton
+import com.vibe.v2ex.feature.imageupload.ImgurUploadViewModel
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -76,6 +83,23 @@ fun WriteScreen(
     viewModel: WriteViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val imageModel: ImgurUploadViewModel = hiltViewModel()
+    val uploadState by imageModel.upload.state.collectAsState()
+    val imageContext = "write:${uiState.topicId}:${uiState.isWebSessionActive}"
+    var editor by rememberSaveable(uiState.topicId, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(uiState.content, TextRange(uiState.content.length)))
+    }
+    var editorInitialized by rememberSaveable(uiState.topicId) { mutableStateOf(uiState.draftLoaded) }
+    val editorFocus = remember { FocusRequester() }
+    LaunchedEffect(uiState.content, uiState.draftLoaded) {
+        val latest = viewModel.uiState.value
+        if (latest.draftLoaded) {
+            editor = if (!editorInitialized || editor.text != latest.content) {
+                TextFieldValue(latest.content, TextRange(latest.content.length))
+            } else editor
+            editorInitialized = true
+        }
+    }
     val context = LocalContext.current
     val isReply = uiState.topicId != null
     var showNodePicker by remember { mutableStateOf(false) }
@@ -129,7 +153,7 @@ fun WriteScreen(
                 modifier = Modifier.align(Alignment.Center),
             )
             // mirrors iOS：标题或正文任一非空即可点发布，标题缺失由校验给出明确报错。
-            val submitEnabled = if (isReply) {
+            val submitEnabled = uiState.draftLoaded && !uploadState.isUploading && if (isReply) {
                 !uiState.isSubmitting && uiState.content.isNotBlank()
             } else {
                 !uiState.isSubmitting && (uiState.content.isNotBlank() || uiState.title.isNotBlank())
@@ -148,6 +172,7 @@ fun WriteScreen(
                     .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = if (submitEnabled) 1f else 0.4f))
                     .clickable(enabled = submitEnabled) {
+                        if (imageModel.upload.state.value.isUploading) return@clickable
                         when {
                             isReply -> viewModel.submitReply()
                             // 未登录时没有会话 cookie，表单提交必然失败，直接走网页。
@@ -193,19 +218,24 @@ fun WriteScreen(
                                 color = MaterialTheme.colorScheme.onSurface,
                             ),
                             singleLine = true,
+                            enabled = uiState.draftLoaded,
                         )
                         HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
                     }
                     BorderlessField(
-                        value = uiState.content,
-                        onValueChange = viewModel::onContentChange,
+                        value = editor,
+                        onValueChange = { value ->
+                            editor = value
+                            if (value.text != viewModel.uiState.value.content) viewModel.onContentChange(value.text)
+                        },
+                        enabled = uiState.draftLoaded,
                         placeholder = "正文（支持 Markdown）",
                         textStyle = TextStyle(
                             fontSize = 16.sp,
                             lineHeight = 26.sp,
                             color = if (LocalV2Dark.current) V2Colors.BodyDark else V2Colors.BodyLight,
                         ),
-                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        modifier = Modifier.fillMaxWidth().weight(1f).focusRequester(editorFocus),
                     )
                 }
             }
@@ -231,11 +261,17 @@ fun WriteScreen(
                         FormatSquare(label = "🔗", fontSize = 14.sp) {
                             viewModel.onContentChange(uiState.content + "[标题](https://)")
                         }
-                        Spacer(modifier = Modifier.weight(1f))
-                        Text(
-                            text = "支持 Markdown",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ImageUploadButton(
+                            model = imageModel,
+                            contextKey = imageContext,
+                            disabled = !uiState.draftLoaded || uiState.isSubmitting || uiState.submitted || uiState.publishedTopicId != null,
+                            onUploaded = { url ->
+                                viewModel.insertImage(url, editor)?.let { result ->
+                                    editor = result
+                                    editorFocus.requestFocus()
+                                }
+                            },
+                            modifier = Modifier.size(40.dp),
                         )
                     }
                 }
@@ -288,7 +324,8 @@ fun WriteScreen(
                             modifier = Modifier
                                 .padding(top = 4.dp)
                                 .clip(RoundedCornerShape(6.dp))
-                                .clickable {
+                                .clickable(enabled = !uploadState.isUploading) {
+                                    if (imageModel.upload.state.value.isUploading) return@clickable
                                     copyAndOpenWebWrite(context, uiState.content, uiState.selectedNode?.name)
                                 }
                                 .padding(vertical = 2.dp),
@@ -393,8 +430,10 @@ private fun BorderlessField(
     textStyle: TextStyle,
     modifier: Modifier = Modifier,
     singleLine: Boolean = false,
+    enabled: Boolean = true,
 ) {
     BasicTextField(
+        enabled = enabled,
         value = value,
         onValueChange = onValueChange,
         textStyle = textStyle,
@@ -410,6 +449,31 @@ private fun BorderlessField(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                innerTextField()
+            }
+        },
+    )
+}
+
+@Composable
+private fun BorderlessField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    placeholder: String,
+    textStyle: TextStyle,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+): Unit {
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        enabled = enabled,
+        textStyle = textStyle,
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        modifier = modifier.fillMaxWidth(),
+        decorationBox = { innerTextField ->
+            Box {
+                if (value.text.isEmpty()) Text(placeholder, style = textStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 innerTextField()
             }
         },

@@ -74,6 +74,8 @@ import com.vibe.v2ex.diagnostics.CrashLog
 import com.vibe.v2ex.designsystem.V2Colors
 import com.vibe.v2ex.designsystem.paletteFor
 import com.vibe.v2ex.feature.tags.MemberTagSettingsViewModel
+import com.vibe.v2ex.feature.imageupload.ImgurUploadViewModel
+import com.vibe.v2ex.feature.imageupload.ImgurSettingsDialog
 import kotlinx.coroutines.delay
 
 private val LINE_SPACING_LABELS = mapOf(
@@ -98,6 +100,10 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val imageModel: ImgurUploadViewModel = hiltViewModel()
+    val imageConfiguration by imageModel.configuration.collectAsState()
+    var showImageSettings by remember { mutableStateOf(false) }
+    if (showImageSettings) ImgurSettingsDialog(imageModel) { showImageSettings = false }
     val context = LocalContext.current
     var deepSeekKeyDraft by remember { mutableStateOf("") }
 
@@ -341,6 +347,16 @@ fun SettingsScreen(
                 value = formatCacheSize(uiState.cacheByteSize),
                 showChevron = false,
                 onClick = viewModel::clearCache,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        SectionHeader("图片上传")
+        V2Card(modifier = Modifier.padding(horizontal = 16.dp)) {
+            ValueRow(
+                label = "Imgur Client ID",
+                value = if (imageConfiguration.clientID.isBlank()) "未配置" else "已配置",
+                onClick = { showImageSettings = true },
             )
         }
 
