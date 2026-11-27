@@ -407,7 +407,7 @@ struct ContentBlocksView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            ForEach(blocks) { block in
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .paragraph(let text):
                     Text(text)
@@ -460,6 +460,28 @@ struct ContentBlocksView: View {
                         }
                     }
 
+                case .quoteContent(let contents):
+                    HStack(alignment: .top, spacing: 12) {
+                        Rectangle()
+                            .fill(Theme.accent.opacity(0.5))
+                            .frame(width: 2)
+                        ContentBlocksView(blocks: contents, fontSize: max(11, baseSize - 1), lineSpacing: baseSpacing * 0.8)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+
+                case .listContent(let items):
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { _, contents in
+                            HStack(alignment: .top, spacing: 9) {
+                                Circle()
+                                    .fill(Theme.accent.opacity(0.55))
+                                    .frame(width: 5, height: 5)
+                                    .padding(.top, baseSize * 0.45)
+                                ContentBlocksView(blocks: contents, fontSize: baseSize, lineSpacing: baseSpacing)
+                            }
+                        }
+                    }
+
                 case .image(let url):
                     Button {
                         previewImage = PreviewImage(url: url)
@@ -501,6 +523,8 @@ private struct FullScreenImagePreview: View {
                             .font(.system(size: 32, weight: .light))
                         Text("图片加载失败")
                             .font(.system(size: 15, weight: .medium))
+                        Link("打开原图", destination: url)
+                            .font(.system(size: 15))
                     }
                     .foregroundStyle(.white.opacity(0.72))
                 case .empty:

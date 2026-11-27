@@ -105,6 +105,15 @@ struct SettingsView: View {
                         .buttonStyle(.row)
                         RowSeparator(leadingInset: 54)
                         NavigationLink {
+                            ImgurSettingsView()
+                        } label: {
+                            SettingsRow(icon: "photo", iconColor: Theme.accent,
+                                title: "图片上传", subtitle: settings.imgurClientID.isEmpty
+                                    ? "配置 Imgur Client ID" : "Imgur · 已配置") { Chevron() }
+                        }
+                        .buttonStyle(.row)
+                        RowSeparator(leadingInset: 54)
+                        NavigationLink {
                             TopicMoveDiagnosticsView()
                         } label: {
                             SettingsRow(icon: "stethoscope", iconColor: Theme.accent,

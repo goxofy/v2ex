@@ -60,6 +60,11 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import com.vibe.v2ex.feature.imageupload.ImageUploadButton
+import com.vibe.v2ex.feature.imageupload.ImgurUploadViewModel
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -142,6 +147,22 @@ fun TopicScreen(
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val composerFocus = remember { FocusRequester() }
+    val imageModel: ImgurUploadViewModel = hiltViewModel()
+    val uploadState by imageModel.upload.state.collectAsState()
+    val imageContext = "reply:$topicId:${uiState.isWebSessionActive}:${uiState.currentUsername}"
+    var replyEditor by rememberSaveable(topicId, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(uiState.replyDraft, TextRange(uiState.replyDraft.length)))
+    }
+    var editorInitialized by rememberSaveable(topicId) { mutableStateOf(uiState.replyDraftLoaded) }
+    LaunchedEffect(uiState.replyDraft, uiState.replyDraftLoaded) {
+        val latest = viewModel.uiState.value
+        if (latest.replyDraftLoaded) {
+            replyEditor = if (!editorInitialized || replyEditor.text != latest.replyDraft) {
+                TextFieldValue(latest.replyDraft, TextRange(latest.replyDraft.length))
+            } else replyEditor
+            editorInitialized = true
+        }
+    }
     val scope = rememberCoroutineScope()
     var showShareCard by remember { mutableStateOf(false) }
     var showShareText by remember { mutableStateOf(false) }
@@ -491,18 +512,37 @@ fun TopicScreen(
 
         if (uiState.moderationReady && !uiState.isTopicHidden) {
             ReplyComposerBar(
-                draft = uiState.replyDraft,
+                draft = replyEditor,
                 isSending = uiState.isSendingReply,
+                sendDisabled = uploadState.isUploading || !uiState.replyDraftLoaded,
+                draftLoaded = uiState.replyDraftLoaded,
+                imageUpload = {
+                    if (uiState.isWebSessionActive) ImageUploadButton(
+                        model = imageModel,
+                        contextKey = imageContext,
+                        disabled = uiState.isSendingReply || !uiState.replyDraftLoaded,
+                        onUploaded = { url ->
+                            viewModel.insertImage(url, replyEditor)?.let { result ->
+                                replyEditor = result
+                                composerFocus.requestFocus()
+                            }
+                        },
+                        modifier = Modifier.size(40.dp).padding(end = 4.dp),
+                    )
+                },
                 isLoggedIn = uiState.isWebSessionActive,
                 mentionCandidates = mentionCandidates(uiState),
                 focusRequester = composerFocus,
-                onDraftChange = viewModel::onReplyDraftChange,
+                onDraftChange = { value ->
+                    replyEditor = value
+                    if (value.text != viewModel.uiState.value.replyDraft) viewModel.onReplyDraftChange(value.text)
+                },
                 onInsertMention = { name ->
                     val text = uiState.replyDraft
                     val at = text.lastIndexOf('@')
                     if (at >= 0) viewModel.onReplyDraftChange(text.take(at) + "@$name ")
                 },
-                onSend = viewModel::sendReply,
+                onSend = { if (!imageModel.upload.state.value.isUploading) viewModel.sendReply() },
                 onOpenWebReply = { context.openInBrowser("https://www.v2ex.com/t/$topicId#reply") },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
@@ -1457,12 +1497,15 @@ private fun QuoteCapsule(quoted: QuotedReply, onClick: (() -> Unit)?) {
  */
 @Composable
 private fun ReplyComposerBar(
-    draft: String,
+    draft: TextFieldValue,
     isSending: Boolean,
+    sendDisabled: Boolean,
+    draftLoaded: Boolean,
+    imageUpload: @Composable () -> Unit,
     isLoggedIn: Boolean,
     mentionCandidates: List<String>,
     focusRequester: FocusRequester,
-    onDraftChange: (String) -> Unit,
+    onDraftChange: (TextFieldValue) -> Unit,
     onInsertMention: (String) -> Unit,
     onSend: () -> Unit,
     onOpenWebReply: () -> Unit,
@@ -1508,6 +1551,7 @@ private fun ReplyComposerBar(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
+                imageUpload()
                 // 输入区：surfaceVariant 圆角底，安卓输入条惯用形态。
                 Box(
                     modifier = Modifier
@@ -1521,6 +1565,7 @@ private fun ReplyComposerBar(
                         BasicTextField(
                             value = draft,
                             onValueChange = onDraftChange,
+                            enabled = draftLoaded,
                             textStyle = TextStyle(
                                 fontSize = 16.sp,
                                 lineHeight = 21.sp,
@@ -1533,7 +1578,7 @@ private fun ReplyComposerBar(
                                 .focusRequester(focusRequester),
                             decorationBox = { innerTextField ->
                                 Box {
-                                    if (draft.isEmpty()) {
+                                    if (draft.text.isEmpty()) {
                                         Text(
                                             text = "写下你的回复…",
                                             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 21.sp),
@@ -1558,13 +1603,13 @@ private fun ReplyComposerBar(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(
-                            if (isLoggedIn && draft.isBlank()) {
+                            if (isLoggedIn && (draft.text.isBlank() || sendDisabled)) {
                                 MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
                             } else {
                                 MaterialTheme.colorScheme.primary
                             },
                         )
-                        .clickable(enabled = !isSending) {
+                        .clickable(enabled = !isSending && (!isLoggedIn || (!sendDisabled && draft.text.isNotBlank()))) {
                             if (isLoggedIn) onSend() else onOpenWebReply()
                         },
                     contentAlignment = Alignment.Center,

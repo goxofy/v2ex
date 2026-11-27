@@ -6,6 +6,8 @@ enum ContentBlock: Identifiable, Hashable {
     case code(String)
     case quote(AttributedString)
     case list([AttributedString])
+    case quoteContent([ContentBlock])
+    case listContent([[ContentBlock]])
     case image(URL)
     case rule
 
@@ -15,6 +17,8 @@ enum ContentBlock: Identifiable, Hashable {
         case .code(let s): return "c:\(s.hashValue)"
         case .quote(let s): return "q:\(s.description.hashValue)"
         case .list(let items): return "l:\(items.map(\.description).joined().hashValue)"
+        case .quoteContent(let blocks): return "qc:\(blocks.hashValue)"
+        case .listContent(let items): return "lc:\(items.hashValue)"
         case .image(let url): return "i:\(url.absoluteString)"
         case .rule: return "hr"
         }
@@ -29,150 +33,156 @@ enum HTMLText {
 
     // MARK: Public entry points
 
-    /// Full block-level parse for topic bodies and long replies.
+    /// Images keep their position even inside inline wrappers, quotes and lists.
     static func blocks(from html: String) -> [ContentBlock] {
-        var blocks: [ContentBlock] = []
-        var scanner = Scanner(source: html)
-        var pending = ""
-
-        func flushParagraph() {
-            let attributed = inline(pending)
-            if !attributed.characters.isEmpty {
-                blocks.append(.paragraph(attributed))
-            }
-            pending = ""
-        }
-
-        /// A `<p>` may contain `<img>` runs — V2EX renders images inside
-        /// paragraphs. Pull each image out as its own block; the inline pass
-        /// would otherwise collapse them into "[图片]" links.
-        func appendParagraph(_ html: String) {
-            var text = ""
-            var innerScanner = Scanner(source: html)
-            func flush() {
-                let attributed = inline(text)
-                if !attributed.characters.isEmpty { blocks.append(.paragraph(attributed)) }
-                text = ""
-            }
-            while let chunk = innerScanner.next() {
-                switch chunk {
-                case .text(let t):
-                    text += t
-                case .element(let name, let attributes, let inner):
-                    switch name {
-                    case "img":
-                        if let src = attributes["src"], let url = absoluteURL(src) {
-                            flush()
-                            blocks.append(.image(url))
-                        }
-                    case "br":
-                        text += "\n"
-                    case "a" where inner.contains("<img"):
-                        // Linked image: promote it, drop the "[图片]" text.
-                        if let src = imageSource(in: inner), let url = absoluteURL(src) {
-                            flush()
-                            blocks.append(.image(url))
-                        } else {
-                            text += reassemble(name: name, attributes: attributes, inner: inner)
-                        }
-                    default:
-                        text += reassemble(name: name, attributes: attributes, inner: inner)
-                    }
-                }
-            }
-            flush()
-        }
-
-        while let chunk = scanner.next() {
-            switch chunk {
-            case .text(let text):
-                pending += text
-            case .element(let name, let attributes, let inner):
-                switch name {
-                case "p":
-                    flushParagraph()
-                    appendParagraph(inner)
-                case "pre":
-                    flushParagraph()
-                    blocks.append(.code(decode(strip(inner)).trimmingCharacters(in: .newlines)))
-                case "code" where inner.contains("\n"):
-                    // A bare multi-line <code> is a fenced block on V2EX.
-                    flushParagraph()
-                    blocks.append(.code(decode(strip(inner)).trimmingCharacters(in: .newlines)))
-                case "blockquote":
-                    flushParagraph()
-                    blocks.append(contentsOf: quoteBlocks(from: inner))
-                case "ul", "ol":
-                    flushParagraph()
-                    let items = listItems(in: inner)
-                    if !items.isEmpty { blocks.append(.list(items)) }
-                case "img":
-                    flushParagraph()
-                    if let src = attributes["src"], let url = absoluteURL(src) {
-                        blocks.append(.image(url))
-                    }
-                case "hr":
-                    flushParagraph()
-                    blocks.append(.rule)
-                case "a" where inner.contains("<img"):
-                    // Linked image outside a <p> — promote it instead of letting
-                    // the inline pass collapse it into a "[图片]" link.
-                    flushParagraph()
-                    if let src = imageSource(in: inner), let url = absoluteURL(src) {
-                        blocks.append(.image(url))
-                    } else {
-                        pending += reassemble(name: name, attributes: attributes, inner: inner)
-                    }
-                case "br":
-                    pending += "\n"
-                default:
-                    // Inline-level tag encountered outside a paragraph: keep it
-                    // in the running buffer so its formatting survives.
-                    pending += reassemble(name: name, attributes: attributes, inner: inner)
-                }
-            }
-        }
-        flushParagraph()
-        return blocks
+        blockContent(html, depth: 0)
     }
 
-    /// Quote blocks keep their text but promote any images out of the inline
-    /// pass (which would otherwise collapse `<img>` into a "[图片]" link).
-    private static func quoteBlocks(from html: String) -> [ContentBlock] {
-        var text = ""
-        var result: [ContentBlock] = []
-        var scanner = Scanner(source: html)
+    private struct InlineStyle {
+        var intent: InlinePresentationIntent = []
+        var link: URL?
 
-        func flush() {
-            let attributed = inline(text)
-            if !attributed.characters.isEmpty { result.append(.quote(attributed)) }
-            text = ""
+        func apply(to text: String) -> AttributedString {
+            var value = AttributedString(text)
+            if !intent.isEmpty { value.inlinePresentationIntent = intent }
+            value.link = link
+            return value
+        }
+    }
+
+    private static func blockContent(_ html: String, depth: Int) -> [ContentBlock] {
+        guard depth < 64 else { return [.paragraph(AttributedString(plain(html)))] }
+        var result: [ContentBlock] = []
+        var pending = AttributedString()
+
+        func flush() -> Void {
+            result.append(contentsOf: imageLines(in: trimmed(pending)))
+            pending = AttributedString()
         }
 
-        while let chunk = scanner.next() {
-            switch chunk {
-            case .text(let t):
-                text += t
-            case .element(let name, let attributes, let inner):
-                switch name {
-                case "img":
-                    if let src = attributes["src"], let url = absoluteURL(src) {
+        func walk(_ fragment: String, style: InlineStyle, level: Int) -> Void {
+            guard level < 64 else {
+                pending += style.apply(to: plain(fragment))
+                return
+            }
+            var scanner = Scanner(source: fragment)
+            while let chunk = scanner.next() {
+                switch chunk {
+                case .text(let text):
+                    pending += style.apply(to: decode(text))
+                case .element(let name, let attributes, let inner):
+                    switch name {
+                    case "script", "style": break
+                    case "img":
+                        if let src = attributes["src"], let url = absoluteURL(src),
+                           ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+                            flush()
+                            result.append(.image(url))
+                        }
+                    case "br": pending += style.apply(to: "\n")
+                    case "hr":
                         flush()
-                        result.append(.image(url))
-                    }
-                case "a" where inner.contains("<img"):
-                    if let src = imageSource(in: inner), let url = absoluteURL(src) {
+                        result.append(.rule)
+                    case "pre":
                         flush()
-                        result.append(.image(url))
-                    } else {
-                        text += reassemble(name: name, attributes: attributes, inner: inner)
+                        result.append(.code(decode(strip(inner)).trimmingCharacters(in: .newlines)))
+                    case "code":
+                        let text = decode(strip(inner))
+                        if text.contains("\n") {
+                            flush()
+                            result.append(.code(text.trimmingCharacters(in: .newlines)))
+                        } else {
+                            var codeStyle = style
+                            codeStyle.intent.insert(.code)
+                            pending += codeStyle.apply(to: text)
+                        }
+                    case "blockquote":
+                        flush()
+                        let contents = blockContent(inner, depth: level + 1)
+                        if contents.allSatisfy({ if case .paragraph = $0 { return true }; return false }) {
+                            result.append(contentsOf: contents.map {
+                                if case .paragraph(let text) = $0 { return .quote(text) }
+                                return $0
+                            })
+                        } else if !contents.isEmpty {
+                            result.append(.quoteContent(contents))
+                        }
+                    case "ul", "ol":
+                        flush()
+                        var items: [[ContentBlock]] = []
+                        var itemScanner = Scanner(source: inner)
+                        while let item = itemScanner.next() {
+                            if case .element("li", _, let body) = item {
+                                let contents = blockContent(body, depth: level + 1)
+                                if !contents.isEmpty { items.append(contents) }
+                            }
+                        }
+                        let textItems = items.compactMap { item -> AttributedString? in
+                            guard item.count == 1, case .paragraph(let text) = item[0] else { return nil }
+                            return text
+                        }
+                        if !items.isEmpty {
+                            result.append(textItems.count == items.count ? .list(textItems) : .listContent(items))
+                        }
+                    case "p", "div", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6":
+                        flush()
+                        var childStyle = style
+                        if name.hasPrefix("h") { childStyle.intent.insert(.stronglyEmphasized) }
+                        walk(inner, style: childStyle, level: level + 1)
+                        flush()
+                    default:
+                        var childStyle = style
+                        if name == "strong" || name == "b" { childStyle.intent.insert(.stronglyEmphasized) }
+                        if name == "em" || name == "i" { childStyle.intent.insert(.emphasized) }
+                        if name == "a" {
+                            childStyle.link = linkTarget(href: attributes["href"], label: AttributedString(plain(inner)))
+                        }
+                        walk(inner, style: childStyle, level: level + 1)
                     }
-                default:
-                    text += reassemble(name: name, attributes: attributes, inner: inner)
                 }
             }
         }
+
+        walk(html, style: InlineStyle(), level: depth)
         flush()
+        return result
+    }
+
+    /// Expand only a whole line containing a direct Imgur URL, never code or a
+    /// descriptive/misdirected link. Preserve attributed text around each image.
+    private static func imageLines(in text: AttributedString) -> [ContentBlock] {
+        guard !text.characters.isEmpty else { return [] }
+        var result: [ContentBlock] = []
+        var pending = AttributedString()
+        var start = text.startIndex
+
+        func appendLine(endingAt end: AttributedString.Index, newline: Bool) -> Void {
+            let line = AttributedString(text[start..<end])
+            let candidate = trimmed(line)
+            let raw = String(candidate.characters)
+            let url = ImgurImageLink.url(from: raw)
+            let allowed = candidate.runs.allSatisfy { run in
+                run.inlinePresentationIntent?.contains(.code) != true
+                    && (run.link == nil || run.link == url)
+            }
+            if let url, allowed {
+                let before = trimmed(pending)
+                if !before.characters.isEmpty { result.append(.paragraph(before)) }
+                pending = AttributedString()
+                result.append(.image(url))
+            } else {
+                pending += line
+                if newline { pending += AttributedString("\n") }
+            }
+        }
+
+        for index in text.characters.indices where text.characters[index] == "\n" {
+            appendLine(endingAt: index, newline: true)
+            start = text.index(afterCharacter: index)
+        }
+        appendLine(endingAt: text.endIndex, newline: false)
+        let remainder = trimmed(pending)
+        if !remainder.characters.isEmpty { result.append(.paragraph(remainder)) }
         return result
     }
 
@@ -252,23 +262,6 @@ enum HTMLText {
 
     // MARK: Internals
 
-    private static func listItems(in html: String) -> [AttributedString] {
-        var items: [AttributedString] = []
-        var scanner = Scanner(source: html)
-        while let chunk = scanner.next() {
-            if case .element(let name, _, let inner) = chunk, name == "li" {
-                let attributed = inline(inner)
-                if !attributed.characters.isEmpty { items.append(attributed) }
-            }
-        }
-        return items
-    }
-
-    private static func reassemble(name: String, attributes: [String: String], inner: String) -> String {
-        let attrs = attributes.map { " \($0.key)=\"\($0.value)\"" }.joined()
-        return "<\(name)\(attrs)>\(inner)</\(name)>"
-    }
-
     private static func trimmed(_ value: AttributedString) -> AttributedString {
         var result = value
         while let first = result.characters.first, first.isWhitespace {
@@ -279,22 +272,6 @@ enum HTMLText {
             result.removeSubrange(result.index(beforeCharacter: end)..<end)
         }
         return result
-    }
-
-    /// First `<img>` src inside a fragment — for linked-image paragraphs.
-    static func imageSource(in html: String) -> String? {
-        guard let match = html.range(
-            of: #"<img[^>]*src\s*=\s*"([^"]+)""#,
-            options: .regularExpression
-        ) else { return nil }
-        let fragment = String(html[match])
-        guard let value = fragment.range(
-            of: #"src\s*=\s*"[^"]+""#,
-            options: .regularExpression
-        ) else { return nil }
-        return String(fragment[value])
-            .replacingOccurrences(of: "src=\"", with: "")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
     }
 
     /// An anchor's destination, falling back to its own label when the `href`

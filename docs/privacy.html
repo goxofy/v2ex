@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#087a5b">
-  <meta name="description" content="v2Explore for V2EX 隐私政策：无广告、跟踪或用户画像；仅在用户主动举报时传送匿名举报内容。">
+  <meta name="description" content="v2Explore for V2EX 隐私政策：无广告、跟踪或用户画像；说明阅读、主动图片上传与举报等功能的数据处理范围。">
   <title>隐私政策 · v2Explore for V2EX</title>
   <link rel="icon" type="image/png" href="app-icon.png?v=20260805">
   <style>
@@ -378,7 +378,7 @@
   <main class="legal">
     <a class="back" href="./">← v2Explore for V2EX</a>
     <h1>隐私政策</h1>
-    <p class="updated">最后更新：2026 年 8 月 30 日</p>
+    <p class="updated">最后更新：2026 年 11 月 27 日</p>
     <p>v2Explore for V2EX（下称「本 App」）是 v2ex.com 的第三方阅读客户端，由独立开发者开发，与 V2EX 官方无从属关系。本页说明本 App 如何处理你的信息。</p>
 
     <h2>一、不进行跟踪、画像或后台行为采集</h2>
@@ -392,12 +392,15 @@
       <li><strong>你的输入</strong>：话题与回复草稿、搜索历史。</li>
       <li><strong>内容治理数据</strong>：按账号保存的官网屏蔽名单缓存、被你举报而隐藏的内容。</li>
       <li><strong>偏好设置</strong>：主题、字号、行距等外观与阅读选项。</li>
+      <li><strong>图片上传配置</strong>：你填写的 Imgur Client ID 保存在本机，仅在主动上传时发送给 Imgur。App 不要求 Imgur Client Secret、账号密码或 OAuth token。</li>
     </ul>
 
     <h2>三、会发出设备的网络请求</h2>
     <ul>
       <li><strong>v2ex.com</strong>：读取话题、节点、通知等内容，以及在你登录后代你发布回复、屏蔽或取消屏蔽用户。App 会读取官网屏蔽名单，并按账号缓存到本机。官网屏蔽状态保存在你的 V2EX 账号中，卸载 App 不会撤销；旧的本机屏蔽规则不再生效，也不会自动上传。请求直接发往 V2EX，不经过开发者的任何服务器。适用 <a href="https://www.v2ex.com/help/privacy" target="_blank" rel="noopener">V2EX 的隐私政策</a>。</li>
       <li><strong>sov2ex.com</strong>：社区维护的 V2EX 全文搜索服务，仅在你主动搜索时发送搜索词。</li>
+      <li><strong>阅读图片</strong>：显示话题、回复中的图片时，App 会向图片链接指向的来源（包括 Imgur 等第三方图床）请求图片。图片来源可获知 IP 地址、所请求的图片地址等必要网络信息；App 不主动向第三方图床附带 V2EX 登录 Cookie 或 Personal Access Token。此行为与主动上传图片不同，不会读取或上传你的本机照片。</li>
+      <li><strong>Imgur 图片上传</strong>：仅在你点击上传、确认提示并通过系统图片选择器选中图片后，App 才会将所选图片和你配置的 Client ID 直接发送到 api.imgur.com，不经过开发者服务器，也不附带 V2EX 登录凭据或正文草稿。App 只读取你选择的图片，不申请整个相册的访问权限；上传前按需缩小、规范方向并重新编码，不复制原始 GPS/EXIF 元数据。图片本身仍可能包含可识别个人的信息，请勿上传敏感内容。上传成功会生成可公开访问的 i.imgur.com 原图链接并插入草稿；图片在发布帖子或回复之前就可能已公开。Imgur 可获知所选图片、Client ID、IP 地址等请求信息，其处理与保留适用 <a href="https://imgur.com/privacy" target="_blank" rel="noopener">Imgur 隐私政策</a>。</li>
       <li><strong>举报回传</strong>：只有当你主动提交举报或屏蔽某个用户时，本 App 才会把这一条举报发给开发者，内容包括被举报的话题或回复 ID、发布者用户名、举报理由和可选补充说明。举报不包含举报人的账号、设备标识、位置或 IP 存储记录，也不会用于广告、跟踪或用户画像。</li>
     </ul>
 
@@ -409,6 +412,8 @@
 
     <h2>六、你的选择</h2>
     <p>你可以随时在 App 内退出登录以清除 Keychain 里的凭据，在「我的 → 内容与屏蔽」里管理或撤销屏蔽与举报，在「阅读与离线」里清空缓存与历史。卸载 App 会删除本机全部数据。</p>
+
+    <p>你可以不配置或随时清除「图片上传」中的 Imgur Client ID，也可以取消选图。取消请求、删除链接或草稿、清除配置、卸载 App 都不会删除已经传到 Imgur 的图片；网络中断时也可能已经上传但未取得链接。本 App 不提供远端图片删除管理，相关处理请联系 Imgur。</p>
 
     <h2>七、联系方式</h2>
     <p>对本政策有疑问，或需要就内容处理提出申诉，请联系 <a href="mailto:hi@xinghelee.com">hi@xinghelee.com</a>。</p>

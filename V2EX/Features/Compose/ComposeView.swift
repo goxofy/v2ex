@@ -12,6 +12,8 @@ struct ComposeView: View {
 
     @EnvironmentObject private var session: V2EXSessionStore
 
+    @StateObject private var imageUpload = ImageUploadCoordinator()
+    @StateObject private var imageSelection = ImageEditorSelection()
     @State private var showNodePicker = false
     @State private var showDrafts = false
     @State private var showPublishNotice = false
@@ -26,9 +28,13 @@ struct ComposeView: View {
         URL(string: "https://www.v2ex.com/write?node=\(drafts.draft.nodeName)")!
     }
 
+    private var imageUploadContext: String {
+        "compose:\(drafts.activeID.uuidString):\(session.isLoggedIn):\(String(describing: session.username))"
+    }
+
     @MainActor
     private func publish() async {
-        guard !isPublishing else { return }
+        guard !isPublishing, !imageUpload.isUploading else { return }
         isPublishing = true
         defer { isPublishing = false }
 
@@ -102,7 +108,15 @@ struct ComposeView: View {
             // 而额度和冷却类的限制越试越糟。
             Text(publishError ?? "请稍后重试。")
         }
-        .onDisappear { drafts.save() }
+        .onChange(of: imageSelection.value) { _, _ in imageSelection.record(in: drafts.draft.body) }
+        .onChange(of: drafts.activeID) { _, _ in
+            imageSelection.reset()
+            imageUpload.setContext(imageUploadContext)
+        }
+        .onDisappear {
+            imageUpload.setContext(nil)
+            drafts.save()
+        }
     }
 
     private var navBar: some View {
@@ -157,7 +171,7 @@ struct ComposeView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(drafts.isEmpty || isPublishing)
+                .disabled(drafts.isEmpty || isPublishing || imageUpload.isUploading)
             }
         }
         .padding(.horizontal, Theme.Metric.screenPadding)
@@ -217,7 +231,7 @@ struct ComposeView: View {
                             .padding(.leading, 5)
                             .allowsHitTesting(false)
                     }
-                    TextEditor(text: $drafts.draft.body)
+                    TextEditor(text: $drafts.draft.body, selection: $imageSelection.value)
                         .font(.system(size: 16))
                         .lineSpacing(5)
                         .foregroundStyle(Theme.body)
@@ -233,12 +247,24 @@ struct ComposeView: View {
         VStack(alignment: .leading, spacing: 7) {
             GroupHeader(title: "格式")
             CardSection(padding: 12) {
-                HStack(spacing: 10) {
-                    formatButton(label: "B", weight: .bold) { wrap("**") }
-                    formatButton(label: "I", italic: true) { wrap("*") }
-                    formatButton(label: "</>", mono: true) { wrap("`") }
-                    formatButton(label: "🔗") { insert("[标题](https://)") }
-                    Spacer()
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        formatButton(label: "B", weight: .bold) { wrap("**") }
+                        formatButton(label: "I", italic: true) { wrap("*") }
+                        formatButton(label: "</>", mono: true) { wrap("`") }
+                        formatButton(label: "🔗") { insert("[标题](https://)") }
+                        ImageUploadButton(
+                            upload: imageUpload, context: imageUploadContext, disabled: isPublishing, compact: true,
+                            onPrepareSelection: { imageSelection.record(in: drafts.draft.body) },
+                            onUploaded: { url in
+                                guard imageUpload.context == imageUploadContext, !isPublishing else { return }
+                                imageSelection.insert(url, into: $drafts.draft.body)
+                                drafts.save()
+                                focus = .body
+                            }
+                        )
+                        Spacer(minLength: 0)
+                    }
                     Text("支持 Markdown")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.muted)

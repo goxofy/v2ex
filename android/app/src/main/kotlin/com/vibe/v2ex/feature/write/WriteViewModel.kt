@@ -1,5 +1,8 @@
 package com.vibe.v2ex.feature.write
 
+import androidx.compose.ui.text.input.TextFieldValue
+import com.vibe.v2ex.feature.imageupload.ImageTextInsertion
+import kotlinx.coroutines.CancellationException
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,6 +27,7 @@ data class WriteUiState(
     val topicId: Long? = null,
     val title: String = "",
     val content: String = "",
+    val draftLoaded: Boolean = false,
     val nodes: List<Node> = emptyList(),
     /** 关注的节点名（有序）— 节点选择器无搜索词时默认只列这些（mirrors iOS NodePicker）。 */
     val followedNames: List<String> = emptyList(),
@@ -66,11 +70,18 @@ class WriteViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            val draft = draftRepository.forTopic(topicId)
-            draft?.let {
-                draftId = it.id
-                _uiState.value = _uiState.value.copy(title = it.title, content = it.content)
+            val draft = try {
+                draftRepository.forTopic(topicId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _uiState.value = _uiState.value.copy(error = "无法读取草稿，请退出后重试。")
+                return@launch
             }
+            draftId = draft?.id
+            _uiState.value = _uiState.value.copy(
+                title = draft?.title.orEmpty(), content = draft?.content.orEmpty(), draftLoaded = true,
+            )
             if (topicId == null) {
                 nodesRepository.allNodes().onSuccess { nodes ->
                     // 恢复草稿选过的节点；否则默认「分享创造」（mirrors iOS 默认草稿）。
@@ -86,13 +97,23 @@ class WriteViewModel @Inject constructor(
     }
 
     fun onTitleChange(value: String) {
+        if (!_uiState.value.draftLoaded) return
         _uiState.value = _uiState.value.copy(title = value)
         autosave()
     }
 
     fun onContentChange(value: String) {
+        if (!_uiState.value.draftLoaded) return
         _uiState.value = _uiState.value.copy(content = value)
         autosave()
+    }
+
+    fun insertImage(url: String, editor: TextFieldValue): TextFieldValue? {
+        val state = _uiState.value
+        if (!state.draftLoaded || state.isSubmitting || state.submitted || state.publishedTopicId != null) return null
+        val result = ImageTextInsertion.insert(url, ImageTextInsertion.synchronize(editor, state.content))
+        onContentChange(result.text)
+        return result
     }
 
     fun onNodeSelected(node: Node) {
@@ -102,6 +123,7 @@ class WriteViewModel @Inject constructor(
 
     private fun autosave() {
         val state = _uiState.value
+        if (!state.draftLoaded) return
         viewModelScope.launch {
             draftId = draftRepository.save(draftId, topicId, state.title, state.content, state.selectedNode?.name)
         }

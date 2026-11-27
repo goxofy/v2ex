@@ -61,6 +61,7 @@ class SettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
     private object Keys {
+        val IMGUR_CLIENT_ID = stringPreferencesKey("imgur_client_id")
         val THEME = stringPreferencesKey("app_theme")
         val DARK_MODE = stringPreferencesKey("dark_mode")
         val FONT_SIZE = floatPreferencesKey("reading_font_size")
@@ -84,6 +85,14 @@ class SettingsDataStore @Inject constructor(
         val NOTIFICATION_PUSH_ENABLED = booleanPreferencesKey("notification_push_enabled")
         val NOTIFICATION_PUSH_INTERVAL = intPreferencesKey("notification_push_interval_minutes")
         val NOTIFICATION_PUSH_LAST_SEEN_ID = longPreferencesKey("notification_push_last_seen_id")
+    }
+
+    val imgurClientID: Flow<String> = context.settingsDataStore.data.map { it[Keys.IMGUR_CLIENT_ID].orEmpty() }
+
+    suspend fun setImgurClientID(value: String): Unit {
+        context.settingsDataStore.edit { prefs ->
+            if (value.isEmpty()) prefs.remove(Keys.IMGUR_CLIENT_ID) else prefs[Keys.IMGUR_CLIENT_ID] = value
+        }
     }
 
     val theme: Flow<AppTheme> = context.settingsDataStore.data.map { prefs ->

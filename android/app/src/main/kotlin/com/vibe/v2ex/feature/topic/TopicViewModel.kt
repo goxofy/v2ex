@@ -1,5 +1,8 @@
 package com.vibe.v2ex.feature.topic
 
+import androidx.compose.ui.text.input.TextFieldValue
+import com.vibe.v2ex.feature.imageupload.ImageTextInsertion
+
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -108,6 +111,7 @@ data class TopicUiState(
     val loadedFromOffline: Boolean = false,
     /** 行内回复草稿与发送态。 */
     val replyDraft: String = "",
+    val replyDraftLoaded: Boolean = false,
     val isSendingReply: Boolean = false,
     /** 记住阅读进度：回复就绪后待恢复的楼层，UI 消费一次后置空。 */
     val pendingRestoreFloor: Int? = null,
@@ -204,6 +208,7 @@ class TopicViewModel @Inject constructor(
     /** Identifies the source represented by [TopicUiState.summary]. */
     private var displayedSummarySource: String? = null
     private var replyDraftId: Long? = null
+    private var replyDraftEdited = false
     private var draftSaveJob: Job? = null
     private var positionSaveJob: Job? = null
     private var initialFloorHandled = false
@@ -245,9 +250,17 @@ class TopicViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            draftRepository.forTopic(topicId)?.let { draft ->
-                replyDraftId = draft.id
-                _uiState.update { it.copy(replyDraft = draft.content) }
+            try {
+                val draft = draftRepository.forTopic(topicId)
+                replyDraftId = draft?.id
+                _uiState.update {
+                    it.copy(replyDraft = if (replyDraftEdited) it.replyDraft else draft?.content.orEmpty(), replyDraftLoaded = true)
+                }
+                if (replyDraftEdited) onReplyDraftChange(_uiState.value.replyDraft)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _uiState.update { it.copy(message = "无法读取回复草稿，请退出后重试。") }
             }
         }
         hydrateFromCacheThenRefresh()
@@ -923,12 +936,22 @@ class TopicViewModel @Inject constructor(
     // MARK: 行内回复
 
     fun onReplyDraftChange(text: String) {
+        replyDraftEdited = true
         _uiState.update { it.copy(replyDraft = text) }
+        if (!_uiState.value.replyDraftLoaded) return
         draftSaveJob?.cancel()
         draftSaveJob = viewModelScope.launch {
             delay(500)
             persistDraft(text)
         }
+    }
+
+    fun insertImage(url: String, editor: TextFieldValue): TextFieldValue? {
+        val state = _uiState.value
+        if (!state.replyDraftLoaded || state.isSendingReply || !secureStore.isWebSessionActive) return null
+        val result = ImageTextInsertion.insert(url, ImageTextInsertion.synchronize(editor, state.replyDraft))
+        onReplyDraftChange(result.text)
+        return result
     }
 
     private suspend fun persistDraft(text: String) {
@@ -943,7 +966,7 @@ class TopicViewModel @Inject constructor(
     fun sendReply() {
         val state = _uiState.value
         val content = state.replyDraft.trim()
-        if (content.isEmpty() || state.isSendingReply) return
+        if (content.isEmpty() || state.isSendingReply || !state.replyDraftLoaded) return
         if (!secureStore.isWebSessionActive) {
             _uiState.update { it.copy(message = "回复需要先在「账号」中登录网页会话") }
             return
